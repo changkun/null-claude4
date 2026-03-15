@@ -11,6 +11,7 @@ import queue
 import re
 import select
 import socket
+import struct
 import threading
 import time
 
@@ -777,6 +778,188 @@ def _age_color(age):
         return 7   # magenta — ancient
 
 
+# --- Animated GIF Export ---
+
+# RGB palette matching the terminal aging colors
+_GIF_PALETTE = [
+    (0, 0, 0),        # 0: dead cell (black)
+    (0, 200, 0),      # 1: age 1-3, green (newborn)
+    (0, 200, 200),    # 2: age 4-8, cyan (young)
+    (0, 80, 255),     # 3: age 9-20, blue (mature)
+    (200, 0, 200),    # 4: age 21+, magenta (ancient)
+    (0, 0, 0),        # 5: padding
+    (0, 0, 0),        # 6: padding
+    (0, 0, 0),        # 7: padding
+]
+
+
+def _age_to_gif_index(age):
+    """Map cell age to GIF palette index."""
+    if age == 0:
+        return 0
+    elif age <= 3:
+        return 1
+    elif age <= 8:
+        return 2
+    elif age <= 20:
+        return 3
+    else:
+        return 4
+
+
+def _lzw_compress(pixels, min_code_size):
+    """LZW-compress pixel data for GIF encoding."""
+    clear_code = 1 << min_code_size
+    eoi_code = clear_code + 1
+
+    # Build initial table
+    table = {}
+    for i in range(clear_code):
+        table[(i,)] = i
+    next_code = eoi_code + 1
+    code_size = min_code_size + 1
+    max_code = (1 << code_size)
+
+    # Output bit-packing state
+    bit_buffer = 0
+    bits_in_buffer = 0
+    output = bytearray()
+
+    def emit(code):
+        nonlocal bit_buffer, bits_in_buffer
+        bit_buffer |= code << bits_in_buffer
+        bits_in_buffer += code_size
+        while bits_in_buffer >= 8:
+            output.append(bit_buffer & 0xFF)
+            bit_buffer >>= 8
+            bits_in_buffer -= 8
+
+    emit(clear_code)
+
+    if not pixels:
+        emit(eoi_code)
+        if bits_in_buffer > 0:
+            output.append(bit_buffer & 0xFF)
+        return bytes(output)
+
+    current = (pixels[0],)
+    for pixel in pixels[1:]:
+        candidate = current + (pixel,)
+        if candidate in table:
+            current = candidate
+        else:
+            emit(table[current])
+            if next_code < 4096:
+                table[candidate] = next_code
+                next_code += 1
+                if next_code > max_code and code_size < 12:
+                    code_size += 1
+                    max_code = 1 << code_size
+            else:
+                # Table full, emit clear code and reset
+                emit(clear_code)
+                table = {}
+                for i in range(clear_code):
+                    table[(i,)] = i
+                next_code = eoi_code + 1
+                code_size = min_code_size + 1
+                max_code = 1 << code_size
+            current = (pixel,)
+    emit(table[current])
+    emit(eoi_code)
+
+    if bits_in_buffer > 0:
+        output.append(bit_buffer & 0xFF)
+
+    return bytes(output)
+
+
+def _gif_sub_blocks(data):
+    """Split data into GIF sub-blocks (max 255 bytes each), terminated by 0."""
+    result = bytearray()
+    offset = 0
+    while offset < len(data):
+        chunk = data[offset:offset + 255]
+        result.append(len(chunk))
+        result.extend(chunk)
+        offset += 255
+    result.append(0)  # block terminator
+    return bytes(result)
+
+
+def export_gif(history_frames, rows, cols, filepath, cell_size=4, delay_cs=10):
+    """Export a list of grid snapshots as an animated GIF.
+
+    Args:
+        history_frames: list of 2D grids (each grid[r][c] = age int)
+        rows, cols: grid dimensions
+        filepath: output .gif path
+        cell_size: pixel size of each cell (default 4)
+        delay_cs: delay between frames in centiseconds (default 10 = 100ms)
+    """
+    width = cols * cell_size
+    height = rows * cell_size
+    min_code_size = 3  # 8-color palette -> 3 bits
+
+    buf = bytearray()
+
+    # --- Header ---
+    buf.extend(b"GIF89a")
+
+    # --- Logical Screen Descriptor ---
+    buf.extend(struct.pack("<HH", width, height))
+    # Packed field: GCT flag=1, color res=2 (3 bits), sort=0, GCT size=2 (8 colors)
+    buf.append(0b10000010)
+    buf.append(0)  # background color index
+    buf.append(0)  # pixel aspect ratio
+
+    # --- Global Color Table (8 entries, 3 bytes each) ---
+    for r, g, b in _GIF_PALETTE:
+        buf.extend(bytes([r, g, b]))
+
+    # --- NETSCAPE Application Extension (infinite loop) ---
+    buf.extend(b"\x21\xFF\x0B")
+    buf.extend(b"NETSCAPE2.0")
+    buf.extend(b"\x03\x01")
+    buf.extend(struct.pack("<H", 0))  # loop count 0 = infinite
+    buf.append(0)  # block terminator
+
+    # --- Frames ---
+    for frame_grid in history_frames:
+        # Graphic Control Extension
+        buf.extend(b"\x21\xF9\x04")
+        buf.append(0x00)  # packed: disposal=0, no user input, no transparency
+        buf.extend(struct.pack("<H", delay_cs))
+        buf.append(0)  # transparent color index (unused)
+        buf.append(0)  # block terminator
+
+        # Image Descriptor
+        buf.extend(b"\x2C")
+        buf.extend(struct.pack("<HHHH", 0, 0, width, height))
+        buf.append(0)  # packed: no local color table, not interlaced
+
+        # Build pixel data (row by row, cell_size pixels per cell)
+        pixels = []
+        for r in range(rows):
+            row_pixels = []
+            for c in range(cols):
+                idx = _age_to_gif_index(frame_grid[r][c])
+                row_pixels.extend([idx] * cell_size)
+            for _ in range(cell_size):
+                pixels.extend(row_pixels)
+
+        # LZW compress and write as sub-blocks
+        compressed = _lzw_compress(pixels, min_code_size)
+        buf.append(min_code_size)
+        buf.extend(_gif_sub_blocks(compressed))
+
+    # --- Trailer ---
+    buf.append(0x3B)
+
+    with open(filepath, "wb") as f:
+        f.write(buf)
+
+
 # --- Pattern Recognition ---
 
 
@@ -1445,7 +1628,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
             pop_str = f" | Pop {pop}" if not show_stats else ""
             state_str = 'REWOUND' if browsing_history else ('PAUSED' if paused else 'Running')
             detect_str = " | DETECT" if detect_enabled else ""
-            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{challenge_str}{script_str} | [space]pause [e]dit [g]raph [d]etect [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [q]uit"
+            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{challenge_str}{script_str} | [space]pause [e]dit [g]raph [d]etect [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
@@ -1937,6 +2120,37 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 show_stats = not show_stats
             elif key == ord("d"):
                 detect_enabled = not detect_enabled
+            elif key == ord("G"):
+                # Export history as animated GIF
+                if len(history) > 1:
+                    paused = True
+                    gif_path = os.path.join(os.getcwd(), f"life_gen{generation}.gif")
+                    # Show exporting message
+                    try:
+                        msg = f" Exporting {len(history)} frames to GIF..."
+                        stdscr.addstr(min(rows, max_y - 1), 0,
+                                      msg[:max_x - 1],
+                                      curses.color_pair(2) | curses.A_REVERSE)
+                        stdscr.refresh()
+                    except curses.error:
+                        pass
+                    try:
+                        export_gif(history, rows, cols, gif_path,
+                                   cell_size=4, delay_cs=max(1, int(delay * 100)))
+                        export_msg = f" Saved {gif_path}"
+                    except (OSError, IOError) as exc:
+                        export_msg = f" GIF export failed: {exc}"
+                    # Show result and wait for keypress
+                    try:
+                        stdscr.addstr(min(rows, max_y - 1), 0,
+                                      export_msg[:max_x - 1],
+                                      curses.color_pair(2) | curses.A_REVERSE)
+                        stdscr.refresh()
+                    except curses.error:
+                        pass
+                    stdscr.nodelay(False)
+                    stdscr.getch()  # wait for any key
+                    stdscr.nodelay(True)
             elif key == ord("L"):
                 # Load and run a script (normal mode)
                 paused = True

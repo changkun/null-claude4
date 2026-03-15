@@ -43,6 +43,7 @@ python3 life.py --script ~/my_script.py            # run a script from a file pa
 | `e`       | Enter editor mode (auto-pauses)   |
 | `g`       | Toggle population stats panel     |
 | `d`       | Toggle pattern detection overlay  |
+| `G`       | Export history as animated GIF    |
 | `L`       | Load and run a script             |
 | `[`       | Rewind one generation (auto-pauses) |
 | `]`       | Forward one generation through history |
@@ -239,6 +240,18 @@ Five example scripts ship in `~/.life-scripts/` after first use:
 - **`wave_pattern.py`** — Draws sine waves and circles using the drawing API
 - **`asymmetric_gravity.py`** — Position-dependent rule with gravity effect and `@on_step` monitoring
 
+## Animated GIF Export
+
+Press `G` to export the current time-travel history buffer as an animated GIF. The simulation pauses, encodes every recorded frame, and saves to `life_gen<N>.gif` in the current directory (where N is the current generation number).
+
+- **Color-mapped** — uses the same aging palette as the terminal display: green (newborn) → cyan (young) → blue (mature) → magenta (ancient), on a black background.
+- **Frame timing** — the GIF frame delay matches your current simulation speed setting.
+- **Pure Python** — the GIF89a encoder (LZW compression, NETSCAPE looping extension, sub-block framing) is written from scratch using only `struct`. No Pillow, no ImageMagick, no external dependencies.
+- **Cell rendering** — each grid cell is drawn as a 4×4 pixel block, so a default 80×40 grid produces 320×160 pixel frames.
+- **Infinite loop** — exported GIFs loop forever by default.
+
+The export uses whatever history is available (up to 10,000 generations from the time-travel system), so longer recordings produce larger files. A status message shows progress and the output path.
+
 ## Design Notes
 
 - **Toroidal grid** — cells wrap around all edges, so patterns don't die at boundaries.
@@ -248,4 +261,4 @@ Five example scripts ship in `~/.life-scripts/` after first use:
   - **Blue** (age 9–20) — mature
   - **Magenta** (age 21+) — ancient / stable structures
 - **Curses rendering** — each live cell is drawn as a double-width block (`██`) for a square aspect ratio.
-- **All standard library** — only `curses`, `argparse`, `copy`, `json`, `math`, `os`, `queue`, `re`, `select`, `socket`, `threading`, `time`, and `random` are used.
+- **All standard library** — only `curses`, `argparse`, `copy`, `json`, `math`, `os`, `queue`, `re`, `select`, `socket`, `struct`, `threading`, `time`, and `random` are used.
