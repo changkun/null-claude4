@@ -5,6 +5,7 @@ import argparse
 import copy
 import curses
 import json
+import math
 import os
 import queue
 import re
@@ -89,6 +90,336 @@ PATTERNS = {
 
 
 CELLS_DIR = os.path.expanduser("~/.life-patterns")
+SCRIPTS_DIR = os.path.expanduser("~/.life-scripts")
+
+
+# --- Scripting Engine ---
+
+class ScriptEngine:
+    """Safe Python DSL sandbox for user-programmable automation and custom rules.
+
+    Scripts are plain Python files executed in a restricted namespace with access
+    to a grid API, pattern placement, custom rule definitions, and challenge mode.
+    """
+
+    # Whitelisted modules scripts may import
+    SAFE_MODULES = {"math", "random", "itertools", "functools", "collections"}
+
+    # Whitelisted builtins available to scripts
+    SAFE_BUILTINS = {
+        "abs": abs, "all": all, "any": any, "bool": bool, "dict": dict,
+        "enumerate": enumerate, "filter": filter, "float": float, "int": int,
+        "len": len, "list": list, "map": map, "max": max, "min": min,
+        "print": print, "range": range, "reversed": reversed, "round": round,
+        "set": set, "sorted": sorted, "str": str, "sum": sum, "tuple": tuple,
+        "zip": zip, "True": True, "False": False, "None": None,
+        "isinstance": isinstance, "type": type,
+    }
+
+    def __init__(self):
+        self.custom_rule_fn = None
+        self.on_step_fn = None
+        self.challenge_target = None
+        self.challenge_max_gens = None
+        self.challenge_active = False
+        self.challenge_won = False
+        self.challenge_lost = False
+        self.log_lines = []
+        self.script_name = ""
+        self._grid = None
+        self._grid_rows = 0
+        self._grid_cols = 0
+        self._actions = []  # deferred actions to apply
+
+    def bind_grid(self, grid):
+        """Bind the engine to a live grid reference."""
+        self._grid = grid
+        self._grid_rows = len(grid)
+        self._grid_cols = len(grid[0])
+
+    def _log(self, *args):
+        line = " ".join(str(a) for a in args)
+        self.log_lines.append(line)
+        if len(self.log_lines) > 50:
+            self.log_lines.pop(0)
+
+    def _safe_import(self, name, globals=None, locals=None, fromlist=(), level=0):
+        """Restricted import that only allows whitelisted modules."""
+        if name not in self.SAFE_MODULES:
+            raise ImportError(f"Module '{name}' is not allowed in scripts. "
+                              f"Allowed: {', '.join(sorted(self.SAFE_MODULES))}")
+        import importlib
+        return importlib.import_module(name)
+
+    def _build_namespace(self):
+        """Build the restricted execution namespace for scripts."""
+        engine = self
+
+        class GridAPI:
+            """Proxy object giving scripts safe access to the grid."""
+            @property
+            def rows(self_):
+                return engine._grid_rows
+
+            @property
+            def cols(self_):
+                return engine._grid_cols
+
+            def get(self_, r, c):
+                """Get cell value at (r, c). Returns 0 if out of bounds."""
+                if 0 <= r < engine._grid_rows and 0 <= c < engine._grid_cols:
+                    return engine._grid[r][c]
+                return 0
+
+            def set(self_, r, c, val):
+                """Set cell value at (r, c)."""
+                if 0 <= r < engine._grid_rows and 0 <= c < engine._grid_cols:
+                    engine._grid[r][c] = int(val)
+
+            def clear(self_):
+                """Clear the entire grid."""
+                for r in range(engine._grid_rows):
+                    for c in range(engine._grid_cols):
+                        engine._grid[r][c] = 0
+
+            def population(self_):
+                """Count live cells."""
+                return sum(1 for r in range(engine._grid_rows)
+                           for c in range(engine._grid_cols)
+                           if engine._grid[r][c])
+
+            def neighbours(self_, r, c):
+                """Count live neighbours of cell (r, c) with toroidal wrapping."""
+                rows, cols = engine._grid_rows, engine._grid_cols
+                count = 0
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        if dr == 0 and dc == 0:
+                            continue
+                        nr, nc = (r + dr) % rows, (c + dc) % cols
+                        if engine._grid[nr][nc]:
+                            count += 1
+                return count
+
+            def fill_random(self_, density=0.5):
+                """Fill grid randomly with given density (0.0-1.0)."""
+                import random as _rnd
+                for r in range(engine._grid_rows):
+                    for c in range(engine._grid_cols):
+                        engine._grid[r][c] = 1 if _rnd.random() < density else 0
+
+            def place(self_, pattern_name, row=None, col=None):
+                """Place a named built-in pattern at (row, col) or centered."""
+                if pattern_name not in PATTERNS:
+                    engine._log(f"Unknown pattern: {pattern_name}")
+                    return
+                place_pattern(engine._grid, pattern_name, row, col)
+
+            def stamp(self_, cells, row=0, col=0):
+                """Stamp a 2D list of 0/1 onto the grid at (row, col)."""
+                for r in range(len(cells)):
+                    for c in range(len(cells[0])):
+                        gr, gc = row + r, col + c
+                        if 0 <= gr < engine._grid_rows and 0 <= gc < engine._grid_cols:
+                            if cells[r][c]:
+                                engine._grid[gr][gc] = 1
+
+            def rect(self_, r1, c1, r2, c2, val=1):
+                """Fill a rectangle with the given value."""
+                for r in range(min(r1, r2), max(r1, r2) + 1):
+                    for c in range(min(c1, c2), max(c1, c2) + 1):
+                        if 0 <= r < engine._grid_rows and 0 <= c < engine._grid_cols:
+                            engine._grid[r][c] = int(val)
+
+            def line(self_, r1, c1, r2, c2, val=1):
+                """Draw a line using Bresenham's algorithm."""
+                dr = abs(r2 - r1)
+                dc = abs(c2 - c1)
+                sr = 1 if r1 < r2 else -1
+                sc = 1 if c1 < c2 else -1
+                err = dr - dc
+                r, c = r1, c1
+                while True:
+                    if 0 <= r < engine._grid_rows and 0 <= c < engine._grid_cols:
+                        engine._grid[r][c] = int(val)
+                    if r == r2 and c == c2:
+                        break
+                    e2 = 2 * err
+                    if e2 > -dc:
+                        err -= dc
+                        r += sr
+                    if e2 < dr:
+                        err += dr
+                        c += sc
+
+            def circle(self_, cr, cc, radius, val=1):
+                """Draw a circle outline centered at (cr, cc)."""
+                for angle in range(360):
+                    rad = math.radians(angle)
+                    r = int(round(cr + radius * math.sin(rad)))
+                    c = int(round(cc + radius * math.cos(rad)))
+                    if 0 <= r < engine._grid_rows and 0 <= c < engine._grid_cols:
+                        engine._grid[r][c] = int(val)
+
+        def set_rule(birth, survival, name=None):
+            """Set the active rule using birth/survival sets.
+
+            Example: set_rule({3}, {2, 3}) for Conway's Life.
+            """
+            engine._actions.append(("rule", {
+                "b": set(birth), "s": set(survival),
+                "name": name or f"Script (B{''.join(map(str, sorted(birth)))}/S{''.join(map(str, sorted(survival)))})"
+            }))
+
+        def custom_rule(fn):
+            """Register a custom step function.
+
+            The function receives (alive, neighbours, age, row, col) and must
+            return the new cell value (0 for dead, positive int for alive/age).
+
+            Examples:
+                # Probabilistic death for isolated cells
+                def my_rule(alive, n, age, r, c):
+                    if alive and n < 2:
+                        import random
+                        return (age + 1) if random.random() < 0.5 else 0
+                    if alive and n in (2, 3):
+                        return age + 1
+                    if not alive and n == 3:
+                        return 1
+                    return 0
+                custom_rule(my_rule)
+            """
+            if callable(fn):
+                engine.custom_rule_fn = fn
+                engine._log("Custom rule registered")
+            else:
+                engine._log("custom_rule() requires a callable")
+            return fn
+
+        def on_step(fn):
+            """Register a callback invoked after each simulation step.
+
+            The function receives (generation, population).
+
+            Example:
+                @on_step
+                def check(gen, pop):
+                    if pop == 0:
+                        log("Everything died at gen", gen)
+            """
+            if callable(fn):
+                engine.on_step_fn = fn
+            return fn
+
+        def challenge(target_pop, max_gens, description=""):
+            """Activate challenge mode.
+
+            The user must reach target_pop population within max_gens generations.
+            """
+            engine.challenge_target = target_pop
+            engine.challenge_max_gens = max_gens
+            engine.challenge_active = True
+            engine.challenge_won = False
+            engine.challenge_lost = False
+            desc = description or f"Reach population {target_pop} within {max_gens} generations"
+            engine._log(f"CHALLENGE: {desc}")
+
+        def log(*args):
+            """Log a message to the script console."""
+            engine._log(*args)
+
+        ns = {
+            "__builtins__": {**self.SAFE_BUILTINS, "__import__": self._safe_import},
+            "grid": GridAPI(),
+            "set_rule": set_rule,
+            "custom_rule": custom_rule,
+            "on_step": on_step,
+            "challenge": challenge,
+            "log": log,
+            "math": math,
+            "PATTERNS": list(PATTERNS.keys()),
+        }
+        return ns
+
+    def load_and_run(self, filepath, grid):
+        """Load a script file and execute it."""
+        self.bind_grid(grid)
+        self.custom_rule_fn = None
+        self.on_step_fn = None
+        self.challenge_active = False
+        self.challenge_won = False
+        self.challenge_lost = False
+        self.log_lines = []
+        self._actions = []
+        self.script_name = os.path.basename(filepath)
+
+        try:
+            with open(filepath, "r") as f:
+                source = f.read()
+        except OSError as e:
+            self.log_lines.append(f"Error loading script: {e}")
+            return None
+
+        ns = self._build_namespace()
+        try:
+            code = compile(source, filepath, "exec")
+            exec(code, ns)
+        except Exception as e:
+            self.log_lines.append(f"Script error: {type(e).__name__}: {e}")
+
+        # Return any deferred actions (like rule changes)
+        actions = self._actions
+        self._actions = []
+        return actions
+
+    def run_step_callback(self, generation, population):
+        """Called after each simulation step to run on_step and check challenge."""
+        if self.on_step_fn:
+            try:
+                self.on_step_fn(generation, population)
+            except Exception as e:
+                self._log(f"on_step error: {e}")
+
+        if self.challenge_active and not self.challenge_won and not self.challenge_lost:
+            if population >= self.challenge_target:
+                self.challenge_won = True
+                self._log(f"CHALLENGE WON at gen {generation}! (pop={population})")
+            elif generation >= self.challenge_max_gens:
+                self.challenge_lost = True
+                self._log(f"CHALLENGE FAILED at gen {generation} (pop={population}, needed {self.challenge_target})")
+
+    def custom_step(self, grid):
+        """Run one simulation step using the custom rule function.
+
+        Returns a new grid, or None if no custom rule is set.
+        """
+        if not self.custom_rule_fn:
+            return None
+        self.bind_grid(grid)
+        rows, cols = len(grid), len(grid[0])
+        new = make_grid(rows, cols)
+        fn = self.custom_rule_fn
+        for r in range(rows):
+            for c in range(cols):
+                age = grid[r][c]
+                alive = age > 0
+                n = _neighbours(grid, r, c, rows, cols)
+                try:
+                    result = fn(alive, n, age, r, c)
+                    new[r][c] = max(0, int(result))
+                except Exception:
+                    new[r][c] = 0
+        return new
+
+
+def list_scripts():
+    """List .py script files from the scripts directory."""
+    if not os.path.isdir(SCRIPTS_DIR):
+        return []
+    files = [f for f in os.listdir(SCRIPTS_DIR) if f.endswith(".py")]
+    files.sort()
+    return files
 
 
 def save_cells(grid, filepath):
@@ -771,7 +1102,7 @@ class NetworkPeer:
                 break
 
 
-def run(stdscr, grid, speed, rule=None, network=None):
+def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
     if rule is None:
         rule = RULES["life"]
     curses.curs_set(0)
@@ -819,6 +1150,11 @@ def run(stdscr, grid, speed, rule=None, network=None):
     hist_idx = 0                     # current position in history
     max_history = 10000              # max stored generations
     browsing_history = False         # True when viewing a past state
+
+    # Script engine state
+    se = script_engine or ScriptEngine()
+    se.bind_grid(grid)
+
     # Find current rule index for cycling
     rule_idx = -1
     for i, name in enumerate(RULE_NAMES):
@@ -890,9 +1226,20 @@ def run(stdscr, grid, speed, rule=None, network=None):
 
         # Status bar
         rule_label = rule.get("name", "Custom")
+        if se.custom_rule_fn:
+            rule_label = "Script Rule"
         hist_str = ""
         if browsing_history:
             hist_str = f" | HISTORY {hist_idx}/{len(history)-1}"
+        challenge_str = ""
+        if se.challenge_active:
+            if se.challenge_won:
+                challenge_str = " | CHALLENGE WON!"
+            elif se.challenge_lost:
+                challenge_str = " | CHALLENGE FAILED"
+            else:
+                challenge_str = f" | TARGET: pop {se.challenge_target} in {se.challenge_max_gens} gens"
+        script_str = f" | Script: {se.script_name}" if se.script_name else ""
         if editing and pasting:
             stamp_h, stamp_w = len(clipboard), len(clipboard[0]) if clipboard else (0, 0)
             status = f" PASTE ({cursor_r},{cursor_c}) {stamp_h}x{stamp_w} | [arrows]move [enter]confirm [>/<]rotate [f/F]flip h/v [esc]cancel"
@@ -905,7 +1252,7 @@ def run(stdscr, grid, speed, rule=None, network=None):
         else:
             pop_str = f" | Pop {pop}" if not show_stats else ""
             state_str = 'REWOUND' if browsing_history else ('PAUSED' if paused else 'Running')
-            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str} | [space]pause [e]dit [g]raph [+/-]speed [r]andom [R]ule [n]ext [[][]]scrub [b]eginning [q]uit"
+            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{challenge_str}{script_str} | [space]pause [e]dit [g]raph [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
@@ -937,6 +1284,20 @@ def run(stdscr, grid, speed, rule=None, network=None):
                               curses.color_pair(10) | curses.A_BOLD)
             except curses.error:
                 pass
+
+        # Script engine: show log overlay (last few lines, top-right)
+        if se.log_lines:
+            log_x = 2
+            log_y_start = 1
+            log_count = min(len(se.log_lines), max(1, max_y - 5))
+            for li, line in enumerate(se.log_lines[-log_count:]):
+                ly = log_y_start + li
+                if ly < max_y - 1:
+                    disp = line[:max_x - log_x - 2]
+                    try:
+                        stdscr.addstr(ly, log_x, disp, curses.color_pair(2) | curses.A_DIM)
+                    except curses.error:
+                        pass
 
         stdscr.refresh()
 
@@ -1241,6 +1602,63 @@ def run(stdscr, grid, speed, rule=None, network=None):
                     network.send_rule_change(rule, rule_idx)
             elif key == ord("g"):
                 show_stats = not show_stats
+            elif key == ord("L"):
+                # Load and run a script
+                scripts = list_scripts()
+                if scripts:
+                    sel = 0
+                    picking = True
+                    stdscr.nodelay(False)
+                    while picking:
+                        stdscr.erase()
+                        try:
+                            stdscr.addstr(0, 0, "Load script (arrows to select, enter to run, esc to cancel):",
+                                          curses.color_pair(2))
+                        except curses.error:
+                            pass
+                        for i, sn in enumerate(scripts):
+                            if i + 2 >= max_y - 1:
+                                break
+                            attr = curses.A_REVERSE if i == sel else 0
+                            try:
+                                stdscr.addstr(i + 2, 2, sn, attr)
+                            except curses.error:
+                                pass
+                        stdscr.refresh()
+                        pk = stdscr.getch()
+                        if pk == curses.KEY_UP:
+                            sel = (sel - 1) % len(scripts)
+                        elif pk == curses.KEY_DOWN:
+                            sel = (sel + 1) % len(scripts)
+                        elif pk in (ord("\n"), curses.KEY_ENTER):
+                            filepath = os.path.join(SCRIPTS_DIR, scripts[sel])
+                            actions = se.load_and_run(filepath, grid)
+                            if actions:
+                                for action_type, action_data in actions:
+                                    if action_type == "rule":
+                                        rule = action_data
+                                        rule_idx = -1
+                            picking = False
+                        elif pk == 27:
+                            picking = False
+                    stdscr.nodelay(True)
+                else:
+                    max_y, max_x = stdscr.getmaxyx()
+                    path = curses_input(stdscr, f"Script path (or save to {SCRIPTS_DIR}/): ", max_y, max_x)
+                    if path:
+                        if not os.path.isfile(path):
+                            candidate = os.path.join(SCRIPTS_DIR, path)
+                            if not candidate.endswith(".py"):
+                                candidate += ".py"
+                            if os.path.isfile(candidate):
+                                path = candidate
+                        if os.path.isfile(path):
+                            actions = se.load_and_run(path, grid)
+                            if actions:
+                                for action_type, action_data in actions:
+                                    if action_type == "rule":
+                                        rule = action_data
+                                        rule_idx = -1
             elif key == ord("e"):
                 editing = False
         else:
@@ -1282,8 +1700,14 @@ def run(stdscr, grid, speed, rule=None, network=None):
                     grid = copy.deepcopy(history[hist_idx])
                     browsing_history = False
                     pop_history = [_count_population(h) for h in history[-max_pop_history:]]
-                grid = step(grid, rule)
+                custom_grid = se.custom_step(grid)
+                if custom_grid is not None:
+                    grid = custom_grid
+                else:
+                    grid = step(grid, rule)
                 generation += 1
+                se.bind_grid(grid)
+                se.run_step_callback(generation, _count_population(grid))
                 history.append(copy.deepcopy(grid))
                 hist_idx = len(history) - 1
                 if len(history) > max_history:
@@ -1316,6 +1740,74 @@ def run(stdscr, grid, speed, rule=None, network=None):
                     generation = 0
             elif key == ord("g"):
                 show_stats = not show_stats
+            elif key == ord("L"):
+                # Load and run a script (normal mode)
+                paused = True
+                scripts = list_scripts()
+                if scripts:
+                    sel = 0
+                    picking = True
+                    stdscr.nodelay(False)
+                    while picking:
+                        stdscr.erase()
+                        try:
+                            stdscr.addstr(0, 0, "Load script (arrows to select, enter to run, esc to cancel):",
+                                          curses.color_pair(2))
+                        except curses.error:
+                            pass
+                        for i, sn in enumerate(scripts):
+                            if i + 2 >= max_y - 1:
+                                break
+                            attr = curses.A_REVERSE if i == sel else 0
+                            try:
+                                stdscr.addstr(i + 2, 2, sn, attr)
+                            except curses.error:
+                                pass
+                        stdscr.refresh()
+                        pk = stdscr.getch()
+                        if pk == curses.KEY_UP:
+                            sel = (sel - 1) % len(scripts)
+                        elif pk == curses.KEY_DOWN:
+                            sel = (sel + 1) % len(scripts)
+                        elif pk in (ord("\n"), curses.KEY_ENTER):
+                            filepath = os.path.join(SCRIPTS_DIR, scripts[sel])
+                            actions = se.load_and_run(filepath, grid)
+                            if actions:
+                                for action_type, action_data in actions:
+                                    if action_type == "rule":
+                                        rule = action_data
+                                        rule_idx = -1
+                            generation = 0
+                            history = [copy.deepcopy(grid)]
+                            hist_idx = 0
+                            browsing_history = False
+                            pop_history = []
+                            picking = False
+                        elif pk == 27:
+                            picking = False
+                    stdscr.nodelay(True)
+                else:
+                    max_y2, max_x2 = stdscr.getmaxyx()
+                    path = curses_input(stdscr, f"Script path (or save to {SCRIPTS_DIR}/): ", max_y2, max_x2)
+                    if path:
+                        if not os.path.isfile(path):
+                            candidate = os.path.join(SCRIPTS_DIR, path)
+                            if not candidate.endswith(".py"):
+                                candidate += ".py"
+                            if os.path.isfile(candidate):
+                                path = candidate
+                        if os.path.isfile(path):
+                            actions = se.load_and_run(path, grid)
+                            if actions:
+                                for action_type, action_data in actions:
+                                    if action_type == "rule":
+                                        rule = action_data
+                                        rule_idx = -1
+                            generation = 0
+                            history = [copy.deepcopy(grid)]
+                            hist_idx = 0
+                            browsing_history = False
+                            pop_history = []
             elif key == ord("e"):
                 paused = True
                 editing = True
@@ -1339,8 +1831,15 @@ def run(stdscr, grid, speed, rule=None, network=None):
         if not paused and not editing and not browsing_history:
             # In multiplayer, only the host drives simulation
             if not mp or network.is_host:
-                grid = step(grid, rule)
+                # Use custom rule from script engine if available
+                custom_grid = se.custom_step(grid)
+                if custom_grid is not None:
+                    grid = custom_grid
+                else:
+                    grid = step(grid, rule)
                 generation += 1
+                se.bind_grid(grid)
+                se.run_step_callback(generation, _count_population(grid))
                 history.append(copy.deepcopy(grid))
                 hist_idx = len(history) - 1
                 if len(history) > max_history:
@@ -1389,6 +1888,13 @@ def main():
         metavar="HOST:PORT",
         help="Connect to a multiplayer host (e.g. --connect 192.168.1.5:4444)",
     )
+    parser.add_argument(
+        "--script",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Run a Lua-like Python script on startup (path or name from ~/.life-scripts/)",
+    )
     args = parser.parse_args()
 
     # Resolve rule
@@ -1434,8 +1940,28 @@ def main():
     else:
         place_pattern(grid, args.pattern)
 
+    # Set up scripting engine
+    script_engine = ScriptEngine()
+    if args.script:
+        spath = args.script
+        if not os.path.isfile(spath):
+            # Try scripts directory
+            for ext in ("", ".py"):
+                candidate = os.path.join(SCRIPTS_DIR, spath + ext)
+                if os.path.isfile(candidate):
+                    spath = candidate
+                    break
+        if os.path.isfile(spath):
+            actions = script_engine.load_and_run(spath, grid)
+            if actions:
+                for action_type, action_data in actions:
+                    if action_type == "rule":
+                        rule = action_data
+        else:
+            parser.error(f"Script file not found: {args.script}")
+
     try:
-        curses.wrapper(lambda stdscr: run(stdscr, grid, args.speed, rule, network))
+        curses.wrapper(lambda stdscr: run(stdscr, grid, args.speed, rule, network, script_engine))
     finally:
         if network:
             network.close()

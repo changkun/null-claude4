@@ -15,6 +15,8 @@ python3 life.py --load ~/patterns/my.cells         # load from a file path
 python3 life.py --rule highlife --pattern random    # HighLife ruleset
 python3 life.py --rule daynight                    # Day & Night ruleset
 python3 life.py --rule B2/S                        # custom rule via B/S notation
+python3 life.py --script probabilistic_life        # run a user script on startup
+python3 life.py --script ~/my_script.py            # run a script from a file path
 ```
 
 ### Options
@@ -27,6 +29,7 @@ python3 life.py --rule B2/S                        # custom rule via B/S notatio
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
 | `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
 | `--rule`    | `life`    | Rule preset or B/S notation (e.g. `B36/S23`) |
+| `--script`  | —         | Run a Python script on startup (path or name from `~/.life-scripts/`) |
 
 ### Controls
 
@@ -39,6 +42,7 @@ python3 life.py --rule B2/S                        # custom rule via B/S notatio
 | `R`       | Cycle to next ruleset             |
 | `e`       | Enter editor mode (auto-pauses)   |
 | `g`       | Toggle population stats panel     |
+| `L`       | Load and run a script             |
 | `[`       | Rewind one generation (auto-pauses) |
 | `]`       | Forward one generation through history |
 | `b`       | Jump to beginning of recorded history |
@@ -175,6 +179,42 @@ python3 life.py --connect 127.0.0.1:4444
 - **Protocol** — newline-delimited JSON over TCP. Message types: `sync` (full grid), `cell` (toggle), `cur` (cursor), `step` (simulation tick), `clear`, `pause`, `rule`.
 - **Initial sync** — when a client connects, the host sends the full grid state, generation count, and active ruleset so the client starts in the correct state.
 
+## Scripting Engine
+
+Press `L` at any time or use `--script` at startup to load user scripts from `~/.life-scripts/`. Scripts are plain Python files executed in a sandboxed namespace — dangerous modules (`os`, `sys`, `subprocess`, etc.) are blocked; only `math`, `random`, `itertools`, `functools`, and `collections` are available for import.
+
+### Script API
+
+Scripts have access to a `grid` object and several global functions:
+
+| API | Description |
+|-----|-------------|
+| `grid.get(r, c)` / `grid.set(r, c, val)` | Read/write individual cells |
+| `grid.clear()` / `grid.population()` | Clear grid or count live cells |
+| `grid.neighbours(r, c)` | Count live neighbours (toroidal) |
+| `grid.fill_random(density)` | Fill grid randomly |
+| `grid.place(pattern, r, c)` | Place a built-in pattern |
+| `grid.stamp(cells, r, c)` | Stamp a 2D list onto the grid |
+| `grid.rect(r1, c1, r2, c2)` | Draw a filled rectangle |
+| `grid.line(r1, c1, r2, c2)` | Draw a line (Bresenham's) |
+| `grid.circle(cr, cc, radius)` | Draw a circle outline |
+| `grid.rows` / `grid.cols` | Grid dimensions |
+| `custom_rule(fn)` | Register `fn(alive, neighbours, age, row, col) -> int` as the step rule |
+| `set_rule(birth, survival)` | Set standard B/S rules from script |
+| `@on_step` | Register a callback `(generation, population)` called each tick |
+| `challenge(target_pop, max_gens)` | Activate challenge mode — reach the target or lose |
+| `log(...)` | Display a message on the grid overlay |
+
+### Example Scripts
+
+Five example scripts ship in `~/.life-scripts/` after first use:
+
+- **`probabilistic_life.py`** — Custom rule where lonely cells have a 30% survival chance instead of dying
+- **`glider_factory.py`** — Scripted demo that places multiple guns and pulsars
+- **`population_challenge.py`** — Challenge: reach population 200 in 100 generations starting from 3 gliders
+- **`wave_pattern.py`** — Draws sine waves and circles using the drawing API
+- **`asymmetric_gravity.py`** — Position-dependent rule with gravity effect and `@on_step` monitoring
+
 ## Design Notes
 
 - **Toroidal grid** — cells wrap around all edges, so patterns don't die at boundaries.
@@ -184,4 +224,4 @@ python3 life.py --connect 127.0.0.1:4444
   - **Blue** (age 9–20) — mature
   - **Magenta** (age 21+) — ancient / stable structures
 - **Curses rendering** — each live cell is drawn as a double-width block (`██`) for a square aspect ratio.
-- **All standard library** — only `curses`, `argparse`, `copy`, `json`, `os`, `queue`, `re`, `select`, `socket`, `threading`, `time`, and `random` are used.
+- **All standard library** — only `curses`, `argparse`, `copy`, `json`, `math`, `os`, `queue`, `re`, `select`, `socket`, `threading`, `time`, and `random` are used.
