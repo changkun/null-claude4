@@ -49,6 +49,7 @@ RULES = {
     "forestfire": {"b": set(), "s": set(), "name": "Forest Fire (classic)", "forestfire": True},
     "ising": {"b": set(), "s": set(), "name": "Ising Model (critical)", "ising": True},
     "cca": {"b": set(), "s": set(), "name": "Cyclic CA (14-state)", "cca": True},
+    "chimera": {"b": set(), "s": set(), "name": "Chimera Grid (Life|HighLife)", "chimera": True},
 }
 
 RULE_NAMES = list(RULES.keys())
@@ -184,6 +185,11 @@ def _is_ising(rule):
 def _is_cca(rule):
     """Check if the current rule is the Cyclic Cellular Automaton."""
     return rule.get("cca", False)
+
+
+def _is_chimera(rule):
+    """Check if the current rule is the Chimera Grid multi-rule automaton."""
+    return rule.get("chimera", False)
 
 
 # --- Wa-Tor Predator-Prey Ecosystem ---
@@ -2704,6 +2710,176 @@ def _step_lenia_python():
     _lenia_A = new_A
 
 
+# --- Chimera Grid: multiple B/S rulesets on partitioned zones ---
+# Each cell belongs to a zone, and the zone determines which B/S rule governs
+# that cell's birth/survival logic.  Neighbor counts include cells from all
+# zones — producing emergent boundary dynamics that don't exist in any single
+# ruleset.
+
+_chimera_grid = None       # 2D list of cell ages (0=dead, 1+=alive age)
+_chimera_zone = None       # 2D list of zone indices (int)
+_chimera_rows = 0
+_chimera_cols = 0
+_chimera_preset_idx = 0
+_chimera_rules = []        # list of {"b": set, "s": set, "name": str} dicts
+_chimera_layout = "halves" # "halves", "quadrants", "stripes", "diagonal"
+
+CHIMERA_PRESETS = {
+    "life-vs-highlife": {
+        "rules": [
+            {"b": {3}, "s": {2, 3}, "name": "Life"},
+            {"b": {3, 6}, "s": {2, 3}, "name": "HighLife"},
+        ],
+        "layout": "halves",
+        "desc": "Life | HighLife halves",
+    },
+    "life-vs-seeds": {
+        "rules": [
+            {"b": {3}, "s": {2, 3}, "name": "Life"},
+            {"b": {2}, "s": set(), "name": "Seeds"},
+        ],
+        "layout": "halves",
+        "desc": "Life | Seeds halves",
+    },
+    "quad-mix": {
+        "rules": [
+            {"b": {3}, "s": {2, 3}, "name": "Life"},
+            {"b": {3, 6}, "s": {2, 3}, "name": "HighLife"},
+            {"b": {3, 6, 8}, "s": {2, 4, 5}, "name": "Morley"},
+            {"b": {3}, "s": {1, 2, 3, 4, 5}, "name": "Maze"},
+        ],
+        "layout": "quadrants",
+        "desc": "Life|HighLife|Morley|Maze quadrants",
+    },
+    "stripes-3": {
+        "rules": [
+            {"b": {3}, "s": {2, 3}, "name": "Life"},
+            {"b": {3, 6, 7, 8}, "s": {3, 4, 6, 7, 8}, "name": "DayNight"},
+            {"b": {3, 6}, "s": {1, 2, 5}, "name": "2x2"},
+        ],
+        "layout": "stripes",
+        "desc": "Life|DayNight|2x2 stripes",
+    },
+    "diagonal-clash": {
+        "rules": [
+            {"b": {3}, "s": {2, 3}, "name": "Life"},
+            {"b": {3, 5, 6, 7, 8}, "s": {5, 6, 7, 8}, "name": "Diamoeba"},
+        ],
+        "layout": "diagonal",
+        "desc": "Life \\ Diamoeba diagonal",
+    },
+}
+CHIMERA_PRESET_NAMES = list(CHIMERA_PRESETS.keys())
+
+
+def _chimera_build_zones(rows, cols, layout, n_rules):
+    """Build a 2D zone map partitioning the grid into *n_rules* regions."""
+    zone = [[0] * cols for _ in range(rows)]
+    if layout == "halves":
+        mid = cols // 2
+        for r in range(rows):
+            for c in range(cols):
+                zone[r][c] = 0 if c < mid else 1
+    elif layout == "quadrants":
+        mid_r, mid_c = rows // 2, cols // 2
+        for r in range(rows):
+            for c in range(cols):
+                qi = (0 if r < mid_r else 2) + (0 if c < mid_c else 1)
+                zone[r][c] = qi % n_rules
+    elif layout == "stripes":
+        stripe_w = max(1, cols // n_rules)
+        for r in range(rows):
+            for c in range(cols):
+                zone[r][c] = min(c // stripe_w, n_rules - 1)
+    elif layout == "diagonal":
+        for r in range(rows):
+            for c in range(cols):
+                # Diagonal split: above vs below the main diagonal
+                frac_r = r / max(rows - 1, 1)
+                frac_c = c / max(cols - 1, 1)
+                zone[r][c] = 0 if frac_c <= frac_r else min(1, n_rules - 1)
+    return zone
+
+
+def _chimera_init(rows, cols, preset_name=None):
+    """Initialize the Chimera Grid with zoned rulesets."""
+    global _chimera_grid, _chimera_zone, _chimera_rows, _chimera_cols
+    global _chimera_rules, _chimera_layout, _chimera_preset_idx
+    import random as _rng
+
+    _chimera_rows, _chimera_cols = rows, cols
+    if preset_name is None:
+        preset_name = CHIMERA_PRESET_NAMES[_chimera_preset_idx]
+    else:
+        if preset_name in CHIMERA_PRESETS:
+            _chimera_preset_idx = CHIMERA_PRESET_NAMES.index(preset_name)
+    preset = CHIMERA_PRESETS[preset_name]
+    _chimera_rules = preset["rules"]
+    _chimera_layout = preset["layout"]
+
+    _chimera_zone = _chimera_build_zones(rows, cols, _chimera_layout, len(_chimera_rules))
+
+    # Random initial state — ~25 % density
+    _chimera_grid = [[0] * cols for _ in range(rows)]
+    for r in range(rows):
+        for c in range(cols):
+            if _rng.random() < 0.25:
+                _chimera_grid[r][c] = 1
+
+
+def _chimera_step():
+    """Advance the Chimera Grid one generation.
+
+    Each cell is updated according to the B/S rule of its zone, but
+    neighbor counts include cells from all zones — this is what creates
+    the emergent boundary dynamics.
+    """
+    global _chimera_grid
+    rows, cols = _chimera_rows, _chimera_cols
+    new = [[0] * cols for _ in range(rows)]
+    for r in range(rows):
+        for c in range(cols):
+            # Count Moore neighbours (all zones contribute)
+            n = 0
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = (r + dr) % rows, (c + dc) % cols
+                    if _chimera_grid[nr][nc]:
+                        n += 1
+            # Apply the rule for *this* cell's zone
+            zone_id = _chimera_zone[r][c]
+            rule = _chimera_rules[zone_id]
+            if _chimera_grid[r][c]:
+                new[r][c] = (_chimera_grid[r][c] + 1) if n in rule["s"] else 0
+            else:
+                new[r][c] = 1 if n in rule["b"] else 0
+    _chimera_grid = new
+
+
+def _chimera_to_grid(rows, cols):
+    """Convert internal chimera state to a 2D grid for the renderer."""
+    out = [[0] * cols for _ in range(rows)]
+    for r in range(min(rows, _chimera_rows)):
+        for c in range(min(cols, _chimera_cols)):
+            out[r][c] = _chimera_grid[r][c]
+    return out
+
+
+def _chimera_color(val, zone_id):
+    """Map a cell value + zone to a curses color pair.
+
+    Each zone gets a distinct hue so the partition is visible, and age
+    shifts brightness within that hue.
+    """
+    if val <= 0:
+        return 1
+    # Zone-based palette: green, cyan, magenta, yellow, red, blue
+    zone_colors = [1, 5, 7, 15, 21, 6]
+    return zone_colors[zone_id % len(zone_colors)]
+
+
 def parse_rule_string(rule_str):
     """Parse a rule string like 'B36/S23' into birth/survival sets."""
     rule_str = rule_str.upper().replace(" ", "")
@@ -3544,6 +3720,10 @@ def place_pattern(grid, name, row_off=None, col_off=None):
 def step(grid, rule=None):
     if rule is None:
         rule = RULES["life"]
+    if _is_chimera(rule):
+        rows, cols = len(grid), len(grid[0])
+        _chimera_step()
+        return _chimera_to_grid(rows, cols)
     if _is_cca(rule):
         rows, cols = len(grid), len(grid[0])
         _cca_step()
@@ -5551,7 +5731,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
     sound = SoundEngine()
 
     # Topology mode
-    global _topology, _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _fs_preset_idx
+    global _topology, _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _fs_preset_idx, _chimera_preset_idx
     topo_idx = 0  # index into TOPOLOGIES
     _topology = TOPOLOGIES[topo_idx]
 
@@ -5580,6 +5760,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         forestfire = _is_forestfire(rule)
         ising = _is_ising(rule)
         cca = _is_cca(rule)
+        chimera = _is_chimera(rule)
 
         # Track population
         pop = _count_population(grid)
@@ -5688,6 +5869,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif cca:
                         attr = curses.color_pair(_cca_color(age))
                         cell_str = "\u2588\u2588"
+                    elif chimera:
+                        zid = _chimera_zone[r][c] if r < _chimera_rows and c < _chimera_cols else 0
+                        attr = curses.color_pair(_chimera_color(age, zid))
+                        cell_str = "\u2588\u2588" if age else "  "
                     elif dla:
                         attr = curses.color_pair(_dla_color(age))
                         cell_str = "\u2588\u2588" if age else "  "
@@ -5790,7 +5975,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 wator_str = ""
             ff_str = f" | p={_ff_p_grow:.4f} f={_ff_f_lightning:.5f} [<>]preset" if forestfire else ""
             ising_str = f" | T={_ising_temperature:.3f} [t]cool [y]heat [<>]preset" if ising else ""
-            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{topo_str}{hashlife_str}{gs_str}{eca_str}{turmite_str}{wator_str}{ff_str}{ising_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [T]opo [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
+            chimera_str = f" | {CHIMERA_PRESETS[CHIMERA_PRESET_NAMES[_chimera_preset_idx]]['desc']} [<>]preset" if chimera else ""
+            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{topo_str}{hashlife_str}{gs_str}{eca_str}{turmite_str}{wator_str}{ff_str}{ising_str}{chimera_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [T]opo [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
@@ -6180,6 +6366,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_ff = forestfire
                 was_ising = ising
                 was_cca = cca
+                was_chimera = chimera
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -6198,10 +6385,11 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_ff = _is_forestfire(rule)
                 new_ising = _is_ising(rule)
                 new_cca = _is_cca(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca:
+                new_chimera = _is_chimera(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca or new_chimera:
                     hashlife_active = False
                 # Mode transition: clear grid and re-initialize
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca or was_chimera != new_chimera:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -6238,6 +6426,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_ising:
                         _ising_init(rows, cols)
                         grid = _ising_to_grid(rows, cols)
+                    elif new_chimera:
+                        _chimera_init(rows, cols)
+                        grid = _chimera_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -6344,6 +6535,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 elif cca:
                     _cca_init(rows, cols)
                     grid = _cca_to_grid(rows, cols)
+                elif chimera:
+                    _chimera_init(rows, cols)
+                    grid = _chimera_to_grid(rows, cols)
                 else:
                     import random
                     for r2 in range(rows):
@@ -6370,6 +6564,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_ff = forestfire
                 was_ising = ising
                 was_cca = cca
+                was_chimera = chimera
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -6388,9 +6583,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_ff = _is_forestfire(rule)
                 new_ising = _is_ising(rule)
                 new_cca = _is_cca(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca:
+                new_chimera = _is_chimera(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca or new_chimera:
                     hashlife_active = False
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca or was_chimera != new_chimera:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -6430,6 +6626,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_cca:
                         _cca_init(rows, cols)
                         grid = _cca_to_grid(rows, cols)
+                    elif new_chimera:
+                        _chimera_init(rows, cols)
+                        grid = _chimera_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -6812,6 +7011,28 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 hist_idx = 0
                 browsing_history = False
                 pop_history = []
+            elif key == ord("<") and chimera:
+                _chimera_preset_idx = (_chimera_preset_idx - 1) % len(CHIMERA_PRESET_NAMES)
+                preset_name = CHIMERA_PRESET_NAMES[_chimera_preset_idx]
+                rule["name"] = f"Chimera Grid ({CHIMERA_PRESETS[preset_name]['desc']})"
+                _chimera_init(rows, cols, preset_name)
+                grid = _chimera_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord(">") and chimera:
+                _chimera_preset_idx = (_chimera_preset_idx + 1) % len(CHIMERA_PRESET_NAMES)
+                preset_name = CHIMERA_PRESET_NAMES[_chimera_preset_idx]
+                rule["name"] = f"Chimera Grid ({CHIMERA_PRESETS[preset_name]['desc']})"
+                _chimera_init(rows, cols, preset_name)
+                grid = _chimera_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
             elif key == ord("<") and cca:
                 # Previous CCA preset
                 _cca_preset_idx = (_cca_preset_idx - 1) % len(CCA_PRESET_NAMES)
@@ -7179,6 +7400,16 @@ def _save_module_state(rule):
             "_cca_threshold": _cca_threshold,
             "_cca_neighborhood": _cca_neighborhood,
         })
+    elif _is_chimera(rule):
+        state.update({
+            "_chimera_grid": copy.deepcopy(_chimera_grid),
+            "_chimera_zone": copy.deepcopy(_chimera_zone),
+            "_chimera_rows": _chimera_rows,
+            "_chimera_cols": _chimera_cols,
+            "_chimera_preset_idx": _chimera_preset_idx,
+            "_chimera_rules": copy.deepcopy(_chimera_rules),
+            "_chimera_layout": _chimera_layout,
+        })
     return state
 
 
@@ -7297,6 +7528,16 @@ def _restore_module_state(rule, state):
         _cca_n_states = state["_cca_n_states"]
         _cca_threshold = state["_cca_threshold"]
         _cca_neighborhood = state["_cca_neighborhood"]
+    elif _is_chimera(rule):
+        global _chimera_grid, _chimera_zone, _chimera_rows, _chimera_cols
+        global _chimera_preset_idx, _chimera_rules, _chimera_layout
+        _chimera_grid = state["_chimera_grid"]
+        _chimera_zone = state["_chimera_zone"]
+        _chimera_rows = state["_chimera_rows"]
+        _chimera_cols = state["_chimera_cols"]
+        _chimera_preset_idx = state["_chimera_preset_idx"]
+        _chimera_rules = state["_chimera_rules"]
+        _chimera_layout = state["_chimera_layout"]
 
 
 def _cell_color_pair(age, rule):
@@ -7319,6 +7560,8 @@ def _cell_color_pair(age, rule):
         return _turmite_color(age)
     if _is_grayscott(rule) or _is_lenia(rule) or _is_physarum(rule):
         return _grayscott_color(age)
+    if _is_chimera(rule):
+        return _age_color(age) if age else 1
     if _is_wireworld(rule):
         return _wireworld_color(age) if age else 1
     return _age_color(age) if age else 1
@@ -8372,6 +8615,13 @@ def main():
              "Options: " + ", ".join(CCA_PRESETS.keys()),
     )
     parser.add_argument(
+        "--chimera-preset",
+        choices=list(CHIMERA_PRESETS.keys()),
+        default="life-vs-highlife",
+        help="Chimera Grid preset when --rule chimera (default: life-vs-highlife). "
+             "Options: " + ", ".join(CHIMERA_PRESETS.keys()),
+    )
+    parser.add_argument(
         "--discover",
         action="store_true",
         default=False,
@@ -8449,7 +8699,7 @@ def main():
     )
     args = parser.parse_args()
 
-    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx, _fs_preset_idx, _sp_preset_idx, _dla_preset_idx, _ff_preset_idx
+    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx, _fs_preset_idx, _sp_preset_idx, _dla_preset_idx, _ff_preset_idx, _chimera_preset_idx
 
     # Headless batch-render mode: output PNG frames without terminal UI
     if args.render is not None:
@@ -8559,6 +8809,9 @@ def main():
             elif _is_cca(rule):
                 _cca_init(r, c)
                 g = _cca_to_grid(r, c)
+            elif _is_chimera(rule):
+                _chimera_init(r, c)
+                g = _chimera_to_grid(r, c)
             else:
                 place_pattern(g, args.pattern)
             return g
@@ -8724,6 +8977,14 @@ def main():
             rule["name"] = f"Cyclic CA ({preset['name']})"
         _cca_init(args.rows, args.cols, cca_preset_name)
         grid = _cca_to_grid(args.rows, args.cols)
+    elif args.rule.lower() == "chimera":
+        chimera_preset_name = args.chimera_preset
+        if chimera_preset_name in CHIMERA_PRESETS:
+            _chimera_preset_idx = CHIMERA_PRESET_NAMES.index(chimera_preset_name)
+            preset = CHIMERA_PRESETS[chimera_preset_name]
+            rule["name"] = f"Chimera Grid ({preset['desc']})"
+        _chimera_init(args.rows, args.cols, chimera_preset_name)
+        grid = _chimera_to_grid(args.rows, args.cols)
     elif args.rule.lower() == "sandpile":
         # Abelian Sandpile self-organized criticality
         sp_preset_name = args.sandpile_preset

@@ -1,6 +1,6 @@
 # Cellular Automaton — Terminal Simulator
 
-A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, the **Ising Model** statistical mechanics spin simulation, the **Cyclic Cellular Automaton** (CCA) spiral wave generator, a **split-screen comparison mode** for watching two simulations side-by-side, and supports arbitrary rules via B/S notation.
+A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, the **Ising Model** statistical mechanics spin simulation, the **Cyclic Cellular Automaton** (CCA) spiral wave generator, the **Chimera Grid** multi-rule coexistence mode, a **split-screen comparison mode** for watching two simulations side-by-side, and supports arbitrary rules via B/S notation.
 
 ## Usage
 
@@ -44,6 +44,9 @@ python3 life.py --rule ising --ising-preset cold              # large ordered do
 python3 life.py --rule cca                                     # Cyclic CA (classic spirals)
 python3 life.py --rule cca --cca-preset rainbow                # 20-state rainbow spirals
 python3 life.py --rule cca --cca-preset turbulent              # fast 5-state chaotic cycling
+python3 life.py --rule chimera                                    # Chimera Grid (Life vs HighLife)
+python3 life.py --rule chimera --chimera-preset quad-mix          # four rulesets in quadrants
+python3 life.py --rule chimera --chimera-preset diagonal-clash    # diagonal Life vs Diamoeba
 python3 life.py --script probabilistic_life        # run a user script on startup
 python3 life.py --script ~/my_script.py            # run a script from a file path
 python3 life.py --compare life highlife              # split-screen: Life vs HighLife
@@ -64,7 +67,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--speed`   | 0.1       | Delay between generations (seconds)  |
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
 | `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
-| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, `sandpile`, `dla`, `forestfire`, `ising`, `cca`, or B/S notation (e.g. `B36/S23`) |
+| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, `sandpile`, `dla`, `forestfire`, `ising`, `cca`, `chimera`, or B/S notation (e.g. `B36/S23`) |
 | `--gs-preset` | `mitosis` | Gray-Scott parameter preset (`mitosis`, `coral`, `solitons`, `maze`, `spots`, `worms`, `waves`, `bubbles`) |
 | `--lenia-preset` | `orbium` | Lenia species preset (`orbium`, `geminium`, `scutium`, `hydrogeminium`, `wanderer`, `smooth_life`) |
 | `--eca-rule` | 30        | Wolfram rule number (0–255) for Elementary CA mode |
@@ -77,6 +80,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--forestfire-preset` | `classic` | Forest Fire preset (`classic`, `tinderbox`, `old-growth`, `drought`, `rainforest`) |
 | `--ising-preset` | `critical` | Ising Model preset (`critical`, `cold`, `hot`, `quench`, `ordered`) |
 | `--cca-preset` | `classic` | Cyclic CA preset (`classic`, `sparse`, `von-neumann`, `rainbow`, `turbulent`) |
+| `--chimera-preset` | `life-vs-highlife` | Chimera Grid preset (`life-vs-highlife`, `life-vs-seeds`, `quad-mix`, `stripes-3`, `diagonal-clash`) |
 | `--script`  | —         | Run a Python script on startup (path or name from `~/.life-scripts/`) |
 | `--discover` | off      | Launch genetic algorithm rule discovery mode |
 | `--ga-generations` | 50 | Number of GA generations in discovery mode |
@@ -195,6 +199,7 @@ All rules use Birth/Survival notation — a cell is born if it has exactly B nei
 | `fallingsand` | *(particle physics)* | Gravity-driven sandbox — see [Falling Sand](#falling-sand-particle-simulation) below |
 | `physarum`   | *(chemotaxis)* | Slime mold transport networks — see [Physarum](#physarum-slime-mold-transport-network) below |
 | `sandpile`   | *(self-organized criticality)* | Abelian Sandpile — see [Sandpile](#abelian-sandpile) below |
+| `chimera`    | *(multi-rule zones)* | Multiple B/S rules on one grid — see [Chimera Grid](#chimera-grid--multi-rule-coexistence) below |
 
 Use `--rule <preset>` or `--rule B.../S...` for custom rules. Press `R` at runtime to cycle through presets.
 
@@ -725,6 +730,64 @@ Uses a **checkerboard decomposition** with NumPy (when available) for vectorized
 - **Randomize** (`r`) — re-initializes the spin lattice with the current preset.
 - **Status bar** — shows current temperature and control hints.
 
+## Chimera Grid — Multi-Rule Coexistence
+
+The Chimera Grid partitions the grid into zones, each governed by a different B/S cellular automaton ruleset. Cells obey the birth/survival rule of their zone, but neighbor counts include cells from **all** adjacent zones — producing emergent boundary dynamics that don't exist in any single ruleset. A Life zone bordering a HighLife zone creates unique interface patterns as gliders from one system collide with the other's physics.
+
+### Starting Chimera Grid
+
+```bash
+python3 life.py --rule chimera                                  # Life vs HighLife (halves)
+python3 life.py --rule chimera --chimera-preset life-vs-seeds   # Life vs Seeds (halves)
+python3 life.py --rule chimera --chimera-preset quad-mix        # 4 rules in quadrants
+python3 life.py --rule chimera --chimera-preset stripes-3       # 3 rules in vertical stripes
+python3 life.py --rule chimera --chimera-preset diagonal-clash  # diagonal Life vs Diamoeba
+```
+
+### Presets
+
+| Preset | Layout | Zones | Description |
+|--------|--------|-------|-------------|
+| `life-vs-highlife` | Halves | Life, HighLife | Classic comparison — replicators emerge at the boundary |
+| `life-vs-seeds` | Halves | Life, Seeds | Explosive Seeds growth crashes into stable Life structures |
+| `quad-mix` | Quadrants | Life, HighLife, Morley, Maze | Four distinct dynamics with complex 4-way boundary interactions |
+| `stripes-3` | Stripes | Life, DayNight, 2x2 | Three vertical bands with two boundary interfaces |
+| `diagonal-clash` | Diagonal | Life, Diamoeba | Diagonal partition — amorphous Diamoeba blobs meet Life's precision |
+
+### Zone Layouts
+
+- **Halves** — left/right split at the midpoint
+- **Quadrants** — four rectangular regions (top-left, top-right, bottom-left, bottom-right)
+- **Stripes** — equal-width vertical bands, one per rule
+- **Diagonal** — above/below the main diagonal
+
+### Controls (Chimera mode)
+
+| Key | Action |
+|-----|--------|
+| `<` / `>` | Cycle through Chimera presets |
+| `r` | Re-randomize the grid (~25% density) |
+
+### Rendering
+
+Each zone is rendered with a distinct color so the partition boundaries are visible. Cell age is tracked — live cells increment age each surviving generation, providing visual depth within each zone.
+
+### How It Works
+
+1. The zone map is precomputed at initialization based on the selected layout.
+2. Each cell starts dead or alive (~25% random density).
+3. On each step, every cell counts its Moore neighbors across **all** zones (the key insight — cross-zone neighbor counting is what creates boundary dynamics).
+4. The cell's own zone determines which B/S rule is applied to that count.
+
+This reuses the entire existing B/S rule infrastructure without duplication.
+
+### Interactions
+
+- **HashLife** — incompatible (multi-rule). Switching to Chimera mode auto-deactivates HashLife.
+- **Split-screen** — fully supported. Compare two different Chimera presets side-by-side.
+- **Randomize** (`r`) — re-initializes with the current preset at ~25% density.
+- **Status bar** — shows the current preset description.
+
 ## Population Statistics Dashboard
 
 Press `g` to toggle a 35-column side panel that provides real-time population analytics:
@@ -1072,7 +1135,7 @@ Press `Tab` to switch which pane receives input. The active pane is marked with 
 
 Each pane maintains a fully independent simulation state. Before stepping a pane's simulation forward, the engine saves the other pane's module-level globals and restores the current pane's — this allows specialized modes that rely on module state (Gray-Scott concentrations, Wa-Tor population grids, Ising spin lattices, Physarum trail maps, etc.) to coexist without cross-contamination.
 
-All 20+ simulation modes are supported, and you can mix any two freely — compare a B/S cellular automaton against a continuous reaction-diffusion system, or watch two Ising models at different temperatures.
+All 20+ simulation modes are supported, and you can mix any two freely — compare a B/S cellular automaton against a continuous reaction-diffusion system, watch two Ising models at different temperatures, or pit two Chimera Grid presets against each other.
 
 ## Design Notes
 
