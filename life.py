@@ -4,8 +4,13 @@
 import argparse
 import copy
 import curses
+import json
 import os
+import queue
 import re
+import select
+import socket
+import threading
 import time
 
 # --- Rulesets (Birth/Survival notation) ---
@@ -606,7 +611,167 @@ def _pattern_to_stamp(name):
     return stamp
 
 
-def run(stdscr, grid, speed, rule=None):
+# --- Multiplayer Networking ---
+
+class NetworkPeer:
+    """Handles peer-to-peer networking for multiplayer mode.
+
+    Either hosts (server) or connects (client) over TCP.
+    Messages are newline-delimited JSON.
+    """
+
+    def __init__(self):
+        self.sock = None          # The peer socket (connected to the other player)
+        self.server_sock = None   # Server socket (host only)
+        self.inbox = queue.Queue()  # Messages received from peer
+        self._send_lock = threading.Lock()
+        self._running = False
+        self._thread = None
+        self._buf = b""
+        self.is_host = False
+        self.connected = False
+        self.peer_cursor = (0, 0)  # Remote player's cursor position
+        self.player_id = 0         # 0 = host, 1 = client
+
+    def host(self, port):
+        """Start listening for a peer connection."""
+        self.is_host = True
+        self.player_id = 0
+        self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server_sock.bind(("0.0.0.0", port))
+        self.server_sock.listen(1)
+        self._running = True
+        self._thread = threading.Thread(target=self._host_loop, daemon=True)
+        self._thread.start()
+
+    def connect(self, host, port):
+        """Connect to a host."""
+        self.is_host = False
+        self.player_id = 1
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.connect((host, port))
+        self.sock.setblocking(False)
+        self.connected = True
+        self._running = True
+        self._thread = threading.Thread(target=self._recv_loop, daemon=True)
+        self._thread.start()
+
+    def _host_loop(self):
+        """Wait for a connection, then receive messages."""
+        self.server_sock.settimeout(1.0)
+        while self._running and not self.connected:
+            try:
+                self.sock, _addr = self.server_sock.accept()
+                self.sock.setblocking(False)
+                self.connected = True
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+        self._recv_loop()
+
+    def _recv_loop(self):
+        """Read messages from peer socket."""
+        while self._running and self.sock:
+            try:
+                ready, _, _ = select.select([self.sock], [], [], 0.5)
+                if not ready:
+                    continue
+                data = self.sock.recv(65536)
+                if not data:
+                    self.connected = False
+                    break
+                self._buf += data
+                while b"\n" in self._buf:
+                    line, self._buf = self._buf.split(b"\n", 1)
+                    try:
+                        msg = json.loads(line.decode("utf-8"))
+                        self.inbox.put(msg)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        pass
+            except (OSError, ValueError):
+                self.connected = False
+                break
+
+    def send(self, msg):
+        """Send a JSON message to the peer."""
+        if not self.connected or not self.sock:
+            return
+        try:
+            data = json.dumps(msg, separators=(",", ":")).encode("utf-8") + b"\n"
+            with self._send_lock:
+                self.sock.sendall(data)
+        except OSError:
+            self.connected = False
+
+    def send_grid_sync(self, grid, generation, rule):
+        """Send full grid state to peer (used on initial connect)."""
+        # Convert grid to 0/1 (strip age info for sync)
+        flat = [[1 if c else 0 for c in row] for row in grid]
+        b = "".join(str(d) for d in sorted(rule["b"]))
+        s = "".join(str(d) for d in sorted(rule["s"]))
+        self.send({
+            "t": "sync",
+            "g": flat,
+            "gen": generation,
+            "rule": f"B{b}/S{s}",
+            "name": rule.get("name", ""),
+        })
+
+    def send_cell_toggle(self, r, c, val):
+        """Notify peer of a cell toggle."""
+        self.send({"t": "cell", "r": r, "c": c, "v": val})
+
+    def send_cursor(self, r, c):
+        """Send cursor position to peer."""
+        self.send({"t": "cur", "r": r, "c": c})
+
+    def send_step(self, grid, generation):
+        """Host sends grid state after a simulation step."""
+        flat = [[1 if c else 0 for c in row] for row in grid]
+        self.send({"t": "step", "g": flat, "gen": generation})
+
+    def send_clear(self):
+        self.send({"t": "clear"})
+
+    def send_pause(self, paused):
+        self.send({"t": "pause", "p": paused})
+
+    def send_rule_change(self, rule, rule_idx):
+        b = "".join(str(d) for d in sorted(rule["b"]))
+        s = "".join(str(d) for d in sorted(rule["s"]))
+        self.send({
+            "t": "rule",
+            "rule": f"B{b}/S{s}",
+            "name": rule.get("name", ""),
+            "idx": rule_idx,
+        })
+
+    def close(self):
+        self._running = False
+        if self.sock:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+        if self.server_sock:
+            try:
+                self.server_sock.close()
+            except OSError:
+                pass
+        self.connected = False
+
+    def drain_messages(self):
+        """Yield all queued messages (non-blocking)."""
+        while True:
+            try:
+                yield self.inbox.get_nowait()
+            except queue.Empty:
+                break
+
+
+def run(stdscr, grid, speed, rule=None, network=None):
     if rule is None:
         rule = RULES["life"]
     curses.curs_set(0)
@@ -622,6 +787,15 @@ def run(stdscr, grid, speed, rule=None):
     curses.init_pair(7, curses.COLOR_MAGENTA, -1)     # age 21+: ancient (magenta)
     curses.init_pair(8, curses.COLOR_BLACK, curses.COLOR_CYAN)    # selection highlight
     curses.init_pair(9, curses.COLOR_BLACK, curses.COLOR_MAGENTA) # paste preview
+    curses.init_pair(10, curses.COLOR_BLACK, curses.COLOR_RED)    # remote cursor on dead
+    curses.init_pair(11, curses.COLOR_WHITE, curses.COLOR_RED)    # remote cursor on live
+
+    # Multiplayer state
+    mp = network is not None
+    remote_cursor = (-1, -1)   # peer's cursor position
+    mp_synced = False           # True once initial sync is done (client)
+    mp_sent_sync = False        # True once host has sent sync to peer
+    last_cursor_send = 0.0      # throttle cursor updates
 
     rows, cols = len(grid), len(grid[0])
     generation = 0
@@ -737,11 +911,123 @@ def run(stdscr, grid, speed, rule=None):
         except curses.error:
             pass
 
+        # Multiplayer: show remote cursor
+        if mp and remote_cursor[0] >= 0:
+            rr, rc = remote_cursor
+            if 0 <= rr < vis_rows and 0 <= rc < vis_cols:
+                age = grid[rr][rc]
+                cell_str = "\u2588\u2588" if age else "  "
+                attr = curses.color_pair(11) if age else curses.color_pair(10)
+                try:
+                    stdscr.addstr(rr, rc * 2, cell_str, attr)
+                except curses.error:
+                    pass
+
+        # Multiplayer: show connection status in status bar area
+        if mp:
+            mp_status = ""
+            if not network.connected:
+                mp_status = " [Waiting for peer...]" if network.is_host else " [Connecting...]"
+            else:
+                role = "HOST" if network.is_host else "CLIENT"
+                mp_status = f" [MP:{role}]"
+            try:
+                sx = min(len(status), max_x - len(mp_status) - 2)
+                stdscr.addstr(min(rows, max_y - 1), sx, mp_status[:max_x - sx - 1],
+                              curses.color_pair(10) | curses.A_BOLD)
+            except curses.error:
+                pass
+
         stdscr.refresh()
+
+        # Multiplayer: process incoming network messages
+        if mp:
+            # Host: send initial sync once peer connects
+            if network.is_host and network.connected and not mp_sent_sync:
+                network.send_grid_sync(grid, generation, rule)
+                network.send_pause(paused)
+                mp_sent_sync = True
+
+            for msg in network.drain_messages():
+                mt = msg.get("t")
+                if mt == "sync":
+                    # Full grid sync (client receives this on connect)
+                    new_grid = msg["g"]
+                    if len(new_grid) == rows and len(new_grid[0]) == cols:
+                        for r2 in range(rows):
+                            for c2 in range(cols):
+                                grid[r2][c2] = new_grid[r2][c2]
+                    generation = msg.get("gen", 0)
+                    # Parse rule from sync
+                    rule_s = msg.get("rule", "")
+                    if rule_s:
+                        try:
+                            rule = parse_rule_string(rule_s)
+                            rn = msg.get("name", "")
+                            if rn:
+                                rule["name"] = rn
+                        except ValueError:
+                            pass
+                    # Find matching rule_idx
+                    rule_idx = -1
+                    for i, rname in enumerate(RULE_NAMES):
+                        if RULES[rname]["b"] == rule["b"] and RULES[rname]["s"] == rule["s"]:
+                            rule_idx = i
+                            break
+                    history = [copy.deepcopy(grid)]
+                    hist_idx = 0
+                    browsing_history = False
+                    pop_history = []
+                    mp_synced = True
+                elif mt == "cell":
+                    r2, c2, v = msg["r"], msg["c"], msg["v"]
+                    if 0 <= r2 < rows and 0 <= c2 < cols:
+                        grid[r2][c2] = v
+                elif mt == "cur":
+                    remote_cursor = (msg.get("r", -1), msg.get("c", -1))
+                elif mt == "step":
+                    new_grid = msg.get("g")
+                    if new_grid and len(new_grid) == rows and len(new_grid[0]) == cols:
+                        for r2 in range(rows):
+                            for c2 in range(cols):
+                                grid[r2][c2] = new_grid[r2][c2]
+                    generation = msg.get("gen", generation)
+                    if not browsing_history:
+                        history.append(copy.deepcopy(grid))
+                        hist_idx = len(history) - 1
+                        if len(history) > max_history:
+                            history.pop(0)
+                            hist_idx -= 1
+                elif mt == "clear":
+                    for r2 in range(rows):
+                        for c2 in range(cols):
+                            grid[r2][c2] = 0
+                    generation = 0
+                    history = [copy.deepcopy(grid)]
+                    hist_idx = 0
+                    browsing_history = False
+                    pop_history = []
+                elif mt == "pause":
+                    paused = msg.get("p", paused)
+                elif mt == "rule":
+                    rule_s = msg.get("rule", "")
+                    if rule_s:
+                        try:
+                            rule = parse_rule_string(rule_s)
+                            rn = msg.get("name", "")
+                            if rn:
+                                rule["name"] = rn
+                        except ValueError:
+                            pass
+                    ridx = msg.get("idx", -1)
+                    if ridx >= 0:
+                        rule_idx = ridx
 
         # Handle input
         key = stdscr.getch()
         if key == ord("q"):
+            if mp:
+                network.close()
             break
 
         if editing and pasting:
@@ -762,6 +1048,8 @@ def run(stdscr, grid, speed, rule=None):
                             gr, gc = cursor_r + pr, cursor_c + pc
                             if 0 <= gr < rows and 0 <= gc < cols and clipboard[pr][pc]:
                                 grid[gr][gc] = 1
+                                if mp:
+                                    network.send_cell_toggle(gr, gc, 1)
                 pasting = False
             elif key == 27:  # Escape
                 pasting = False
@@ -794,6 +1082,8 @@ def run(stdscr, grid, speed, rule=None):
                 min_c, max_c2 = min(sel_anchor_c, cursor_c), max(sel_anchor_c, cursor_c)
                 for r2 in range(min_r, max_r2 + 1):
                     for c2 in range(min_c, max_c2 + 1):
+                        if mp and grid[r2][c2]:
+                            network.send_cell_toggle(r2, c2, 0)
                         grid[r2][c2] = 0
                 selecting = False
             elif key == 27:  # Escape
@@ -810,6 +1100,8 @@ def run(stdscr, grid, speed, rule=None):
                 cursor_c = (cursor_c + 1) % cols
             elif key in (ord("\n"), ord(" "), curses.KEY_ENTER):
                 grid[cursor_r][cursor_c] = 0 if grid[cursor_r][cursor_c] else 1
+                if mp:
+                    network.send_cell_toggle(cursor_r, cursor_c, grid[cursor_r][cursor_c])
             elif key == ord("v"):
                 # Enter select mode
                 selecting = True
@@ -870,6 +1162,8 @@ def run(stdscr, grid, speed, rule=None):
                 hist_idx = 0
                 browsing_history = False
                 pop_history = []
+                if mp:
+                    network.send_clear()
             elif key == ord("s"):
                 max_y, max_x = stdscr.getmaxyx()
                 fmt = curses_input(stdscr, "Format [r]le / [c]ells (default: rle): ", max_y, max_x).strip().lower()
@@ -943,6 +1237,8 @@ def run(stdscr, grid, speed, rule=None):
                 else:
                     rule_idx = 0
                     rule = RULES[RULE_NAMES[0]]
+                if mp:
+                    network.send_rule_change(rule, rule_idx)
             elif key == ord("g"):
                 show_stats = not show_stats
             elif key == ord("e"):
@@ -951,6 +1247,8 @@ def run(stdscr, grid, speed, rule=None):
             # Normal-mode controls
             if key == ord(" ") and not browsing_history:
                 paused = not paused
+                if mp:
+                    network.send_pause(paused)
             elif key == ord("+") or key == ord("="):
                 delay = max(0.01, delay - 0.05)
             elif key == ord("-") or key == ord("_"):
@@ -965,6 +1263,8 @@ def run(stdscr, grid, speed, rule=None):
                 hist_idx = 0
                 browsing_history = False
                 pop_history = []
+                if mp:
+                    network.send_grid_sync(grid, generation, rule)
             elif key == ord("R"):
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
@@ -972,6 +1272,8 @@ def run(stdscr, grid, speed, rule=None):
                 else:
                     rule_idx = 0
                     rule = RULES[RULE_NAMES[0]]
+                if mp:
+                    network.send_rule_change(rule, rule_idx)
             elif key == ord("n") and (paused or browsing_history):
                 # Single-step forward: fork from current point if browsing
                 if browsing_history:
@@ -1027,14 +1329,25 @@ def run(stdscr, grid, speed, rule=None):
                 # Rebuild pop_history up to this point
                 pop_history = [_count_population(h) for h in history[-max_pop_history:]]
 
+        # Multiplayer: send cursor position (throttled)
+        if mp and network.connected and editing:
+            now = time.monotonic()
+            if now - last_cursor_send > 0.05:
+                network.send_cursor(cursor_r, cursor_c)
+                last_cursor_send = now
+
         if not paused and not editing and not browsing_history:
-            grid = step(grid, rule)
-            generation += 1
-            history.append(copy.deepcopy(grid))
-            hist_idx = len(history) - 1
-            if len(history) > max_history:
-                history.pop(0)
-                hist_idx -= 1
+            # In multiplayer, only the host drives simulation
+            if not mp or network.is_host:
+                grid = step(grid, rule)
+                generation += 1
+                history.append(copy.deepcopy(grid))
+                hist_idx = len(history) - 1
+                if len(history) > max_history:
+                    history.pop(0)
+                    hist_idx -= 1
+                if mp and network.connected:
+                    network.send_step(grid, generation)
 
         time.sleep(delay)
 
@@ -1062,6 +1375,20 @@ def main():
         default="life",
         help="Rule preset (" + ", ".join(RULE_NAMES) + ") or B/S notation (e.g. B36/S23). Default: life",
     )
+    parser.add_argument(
+        "--host",
+        type=int,
+        default=None,
+        metavar="PORT",
+        help="Host a multiplayer session on PORT (e.g. --host 4444)",
+    )
+    parser.add_argument(
+        "--connect",
+        type=str,
+        default=None,
+        metavar="HOST:PORT",
+        help="Connect to a multiplayer host (e.g. --connect 192.168.1.5:4444)",
+    )
     args = parser.parse_args()
 
     # Resolve rule
@@ -1072,6 +1399,25 @@ def main():
             rule = parse_rule_string(args.rule)
         except ValueError as e:
             parser.error(str(e))
+
+    # Set up multiplayer networking
+    network = None
+    if args.host is not None and args.connect is not None:
+        parser.error("Cannot use --host and --connect at the same time")
+    if args.host is not None:
+        network = NetworkPeer()
+        network.host(args.host)
+    elif args.connect is not None:
+        network = NetworkPeer()
+        try:
+            if ":" in args.connect:
+                host, port_str = args.connect.rsplit(":", 1)
+                port = int(port_str)
+            else:
+                parser.error("--connect requires HOST:PORT format (e.g. 127.0.0.1:4444)")
+            network.connect(host, port)
+        except (ValueError, OSError) as e:
+            parser.error(f"Failed to connect: {e}")
 
     grid = make_grid(args.rows, args.cols)
     if args.load:
@@ -1087,7 +1433,12 @@ def main():
         grid = _load_pattern_file(path, args.rows, args.cols)
     else:
         place_pattern(grid, args.pattern)
-    curses.wrapper(lambda stdscr: run(stdscr, grid, args.speed, rule))
+
+    try:
+        curses.wrapper(lambda stdscr: run(stdscr, grid, args.speed, rule, network))
+    finally:
+        if network:
+            network.close()
 
 
 if __name__ == "__main__":

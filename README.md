@@ -149,6 +149,32 @@ The editor includes a full clipboard system for working with rectangular regions
 - **Pattern stamps** (`P`) lets you load any built-in pattern directly into the clipboard for placement.
 - The clipboard persists across paste operations, so you can stamp the same pattern multiple times. Combine with save/load to build a reusable `.cells` snippet library.
 
+## Multiplayer
+
+Two terminals can connect peer-to-peer and co-edit the same grid in real-time. Each player has a distinct cursor color (yellow = local, red = remote). Uses only Python's standard library (`socket`, `select`, `threading`) — no external dependencies.
+
+```bash
+# Terminal 1: Host a session on port 4444
+python3 life.py --host 4444
+
+# Terminal 2: Connect from another terminal (same machine or remote)
+python3 life.py --connect 127.0.0.1:4444
+```
+
+| Flag        | Description                                      |
+|-------------|--------------------------------------------------|
+| `--host PORT`       | Host a multiplayer session on PORT      |
+| `--connect HOST:PORT` | Connect to a multiplayer host         |
+
+### How it works
+
+- **Host-authoritative simulation** — the host runs `step()` and broadcasts results; the client receives and applies them. This keeps both grids in lockstep.
+- **All edits synced** — cell toggles, paste stamps, cut operations, clear, rule changes, and pause/unpause are replicated to the peer immediately.
+- **Cursor sharing** — each player's cursor position is sent to the peer at ~20 updates/sec. The remote cursor renders in red so it's easy to distinguish from your own.
+- **Connection status** — the status bar shows `[MP:HOST]` or `[MP:CLIENT]` when connected, or `[Waiting for peer...]` before the peer joins.
+- **Protocol** — newline-delimited JSON over TCP. Message types: `sync` (full grid), `cell` (toggle), `cur` (cursor), `step` (simulation tick), `clear`, `pause`, `rule`.
+- **Initial sync** — when a client connects, the host sends the full grid state, generation count, and active ruleset so the client starts in the correct state.
+
 ## Design Notes
 
 - **Toroidal grid** — cells wrap around all edges, so patterns don't die at boundaries.
@@ -158,4 +184,4 @@ The editor includes a full clipboard system for working with rectangular regions
   - **Blue** (age 9–20) — mature
   - **Magenta** (age 21+) — ancient / stable structures
 - **Curses rendering** — each live cell is drawn as a double-width block (`██`) for a square aspect ratio.
-- **All standard library** — only `curses`, `argparse`, `copy`, `os`, `re`, `time`, and `random` are used.
+- **All standard library** — only `curses`, `argparse`, `copy`, `json`, `os`, `queue`, `re`, `select`, `socket`, `threading`, `time`, and `random` are used.
