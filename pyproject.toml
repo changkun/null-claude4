@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cellsim"
+version = "1.0.0"
+description = "Terminal-based cellular automaton simulator with 28+ simulation modes"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [
+    { name = "Changkun Ou", email = "changkun.de@gmail.com" },
+]
+keywords = [
+    "cellular-automata",
+    "simulation",
+    "terminal",
+    "curses",
+    "conway",
+    "game-of-life",
+    "reaction-diffusion",
+    "fluid-dynamics",
+    "boids",
+    "particle-systems",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console :: Curses",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Topic :: Artistic Software",
+]
+
+[project.optional-dependencies]
+fast = ["numpy>=1.24", "scipy>=1.10"]
+dev = ["ruff>=0.4", "mypy>=1.10"]
+
+[project.scripts]
+cellsim = "life:main"
+
+[project.urls]
+Homepage = "https://changkun.de/null-claude4"
+Repository = "https://github.com/changkun/null-claude4"
+
+[tool.setuptools]
+py-modules = ["life"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+ignore = [
+    "E501",   # line too long (handled case-by-case in a 12K-line file)
+    "E741",   # ambiguous variable name (u, v, l are standard in math/physics)
+    "F841",   # local variable assigned but never used
+    "N802",   # function name should be lowercase
+    "N806",   # variable in function should be lowercase
+    "SIM108", # ternary operator
+]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
