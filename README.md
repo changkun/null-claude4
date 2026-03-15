@@ -1,6 +1,6 @@
 # Cellular Automaton — Terminal Simulator
 
-A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, the **Ising Model** statistical mechanics spin simulation, the **Cyclic Cellular Automaton** (CCA) spiral wave generator, the **Chimera Grid** multi-rule coexistence mode, **Particle Life** emergent multi-species particle interactions, **Lattice Boltzmann** D2Q9 fluid dynamics, **Boids** flocking/swarming simulation, **Wave Function Collapse** (WFC) constraint-based procedural generation, a **split-screen comparison mode** for watching two simulations side-by-side, and supports arbitrary rules via B/S notation.
+A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, the **Ising Model** statistical mechanics spin simulation, the **Cyclic Cellular Automaton** (CCA) spiral wave generator, the **Chimera Grid** multi-rule coexistence mode, **Particle Life** emergent multi-species particle interactions, **Lattice Boltzmann** D2Q9 fluid dynamics, **Boids** flocking/swarming simulation, **Wave Function Collapse** (WFC) constraint-based procedural generation, the **2D Wave Equation** damped membrane simulation, a **split-screen comparison mode** for watching two simulations side-by-side, and supports arbitrary rules via B/S notation.
 
 ## Usage
 
@@ -60,6 +60,9 @@ python3 life.py --rule wfc                                                  # WF
 python3 life.py --rule wfc --wfc-preset terrain                             # terrain elevation landscape
 python3 life.py --rule wfc --wfc-preset circuits                            # logic circuit path layouts
 python3 life.py --rule wfc --wfc-preset fabric                              # woven textile patterns
+python3 life.py --rule wave                                                    # 2D Wave Equation (ripple)
+python3 life.py --rule wave --wave-preset resonance                            # standing wave resonance patterns
+python3 life.py --rule wave --wave-preset ocean                                # low-damping ocean waves
 python3 life.py --script probabilistic_life        # run a user script on startup
 python3 life.py --script ~/my_script.py            # run a script from a file path
 python3 life.py --compare life highlife              # split-screen: Life vs HighLife
@@ -80,7 +83,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--speed`   | 0.1       | Delay between generations (seconds)  |
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
 | `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
-| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, `sandpile`, `dla`, `forestfire`, `ising`, `cca`, `chimera`, `particlelife`, `fluid`, `boids`, `wfc`, or B/S notation (e.g. `B36/S23`) |
+| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, `sandpile`, `dla`, `forestfire`, `ising`, `cca`, `chimera`, `particlelife`, `fluid`, `boids`, `wfc`, `wave`, or B/S notation (e.g. `B36/S23`) |
 | `--gs-preset` | `mitosis` | Gray-Scott parameter preset (`mitosis`, `coral`, `solitons`, `maze`, `spots`, `worms`, `waves`, `bubbles`) |
 | `--lenia-preset` | `orbium` | Lenia species preset (`orbium`, `geminium`, `scutium`, `hydrogeminium`, `wanderer`, `smooth_life`) |
 | `--eca-rule` | 30        | Wolfram rule number (0–255) for Elementary CA mode |
@@ -98,6 +101,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--fluid-preset` | `cavity` | LBM Fluid preset (`cavity`, `karman`, `convection`) |
 | `--boids-preset` | `flock` | Boids flocking preset (`flock`, `predator`, `obstacle`, `murmuration`, `vortex`) |
 | `--wfc-preset` | `pipes` | WFC tile preset (`pipes`, `terrain`, `circuits`, `fabric`) |
+| `--wave-preset` | `ripple` | Wave Equation preset (`ripple`, `pluck`, `drum`, `ocean`, `resonance`) |
 | `--script`  | —         | Run a Python script on startup (path or name from `~/.life-scripts/`) |
 | `--discover` | off      | Launch genetic algorithm rule discovery mode |
 | `--ga-generations` | 50 | Number of GA generations in discovery mode |
@@ -127,7 +131,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `B`       | Toggle Braille high-density rendering |
 | `T`       | Cycle topology (Torus → Klein Bottle → Möbius Strip → Bounded) |
 | `H`       | Toggle HashLife hyperspeed mode   |
-| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode; cycle Physarum presets in Physarum mode; cycle Sandpile presets in Sandpile mode; cycle DLA presets in DLA mode; cycle Forest Fire presets in Forest Fire mode; cycle Ising presets in Ising mode; cycle CCA presets in Cyclic CA mode; cycle Particle Life presets in Particle Life mode; cycle LBM Fluid presets in Fluid mode; cycle Boids presets in Boids mode |
+| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode; cycle Physarum presets in Physarum mode; cycle Sandpile presets in Sandpile mode; cycle DLA presets in DLA mode; cycle Forest Fire presets in Forest Fire mode; cycle Ising presets in Ising mode; cycle CCA presets in Cyclic CA mode; cycle Particle Life presets in Particle Life mode; cycle LBM Fluid presets in Fluid mode; cycle Boids presets in Boids mode; cycle Wave Equation presets in Wave mode |
 | `t` / `y` | Decrease / increase temperature in Ising Model mode |
 | `W`       | Enter a specific Wolfram rule number (0–255) in Elementary CA mode |
 | `G`       | Export history as animated GIF    |
@@ -220,6 +224,7 @@ All rules use Birth/Survival notation — a cell is born if it has exactly B nei
 | `particlelife` | *(continuous particles)* | Multi-species particle interactions — see [Particle Life](#particle-life--primordial-soup) below |
 | `fluid`        | *(lattice Boltzmann)* | D2Q9 fluid dynamics — see [LBM Fluid Dynamics](#lbm-fluid-dynamics--lattice-boltzmann-method) below |
 | `boids`          | *(agent-based)* | Flocking/swarming simulation — see [Boids](#boids--flocking-simulation) below |
+| `wave`           | *(wave equation)* | Damped 2D membrane simulation — see [Wave Equation](#wave-equation--2d-membrane-simulation) below |
 
 Use `--rule <preset>` or `--rule B.../S...` for custom rules. Press `R` at runtime to cycle through presets.
 
@@ -1012,6 +1017,56 @@ Press `<` / `>` at runtime to cycle through presets:
 - **HashLife** — incompatible (constraint-based, not discrete cells). Switching to WFC auto-deactivates HashLife.
 - **Split-screen** — fully supported. Complete WFC state (possible sets, collapsed tiles, adjacency tables) is saved/restored for independent pane simulation.
 - **Randomize** (`r`) — reinitializes the grid with all cells in full superposition.
+
+## Wave Equation — 2D Membrane Simulation
+
+A damped 2D wave equation solver that simulates ripples, interference patterns, and standing waves on a bounded membrane. Drop "stones" to create expanding ring waves that reflect off boundaries, interfere constructively and destructively, and gradually decay. The simulation uses Verlet integration with a 5-point Laplacian stencil.
+
+The governing equation:
+
+```
+d²u/dt² = c²(d²u/dx² + d²u/dy²) − damping · du/dt
+```
+
+where `c` controls wave propagation speed and `damping` controls energy dissipation over time. Boundary conditions are fixed (zero displacement at edges), causing wave reflections.
+
+### Starting Wave Equation
+
+```bash
+python3 life.py --rule wave                          # default ripple preset
+python3 life.py --rule wave --wave-preset resonance   # standing wave patterns
+python3 life.py --rule wave --wave-preset ocean        # low-damping ocean waves
+```
+
+### Parameter Presets
+
+Press `<` / `>` at runtime to cycle through presets:
+
+| Preset      | c    | Damping | Visual character                          |
+|-------------|------|---------|-------------------------------------------|
+| `ripple`    | 0.30 | 0.0020  | Single stone drop — clean concentric rings |
+| `pluck`     | 0.40 | 0.0010  | Fast propagation — guitar-string-like vibration |
+| `drum`      | 0.25 | 0.0030  | Slow, heavily damped membrane              |
+| `ocean`     | 0.35 | 0.0005  | Long-lasting waves with minimal decay      |
+| `resonance` | 0.45 | 0.0002  | Near-zero damping — standing wave buildup  |
+
+### Rendering
+
+Displacement is mapped to a symmetric color gradient centered at the quiescent level:
+
+- **Blue** — deep troughs (strong negative displacement)
+- **Cyan** — mild troughs
+- **Dark** — quiescent (near-zero displacement)
+- **Green/Yellow** — mild crests
+- **White** — peak crests (strong positive displacement)
+
+Both terminal (curses + Braille) and headless PNG rendering use this gradient. GIF export is fully supported.
+
+### Interactions
+
+- **HashLife** — incompatible (continuous PDE, not discrete cells). Switching to Wave mode auto-deactivates HashLife.
+- **Split-screen** — fully supported. Complete wave state (displacement fields, parameters) is saved/restored for independent pane simulation.
+- **Randomize** (`r`) — reinitializes the membrane and drops a fresh stone at center.
 
 ## Population Statistics Dashboard
 

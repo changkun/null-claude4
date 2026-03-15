@@ -54,6 +54,7 @@ RULES = {
     "fluid": {"b": set(), "s": set(), "name": "LBM Fluid (Lid-Driven Cavity)", "fluid": True},
     "boids": {"b": set(), "s": set(), "name": "Boids (Classic Flock)", "boids": True},
     "wfc": {"b": set(), "s": set(), "name": "WFC (Pipes)", "wfc": True},
+    "wave": {"b": set(), "s": set(), "name": "Wave Equation (Ripple)", "wave": True},
 }
 
 RULE_NAMES = list(RULES.keys())
@@ -214,6 +215,11 @@ def _is_boids(rule):
 def _is_wfc(rule):
     """Check if the current rule is the Wave Function Collapse simulation."""
     return rule.get("wfc", False)
+
+
+def _is_wave(rule):
+    """Check if the current rule is the 2D Wave Equation simulation."""
+    return rule.get("wave", False)
 
 
 # --- Wa-Tor Predator-Prey Ecosystem ---
@@ -3665,6 +3671,192 @@ def _lbm_color(val):
         return 7        # magenta — strong CCW rotation
 
 
+# --- 2D Wave Equation Simulation ---
+# Damped wave equation: d²u/dt² = c²(d²u/dx² + d²u/dy²) - damping * du/dt
+# Uses Verlet integration with two displacement arrays (current + previous).
+# Users can drop "stones" (Gaussian impulses) to create expanding ring waves
+# that reflect off boundaries and produce interference patterns.
+
+WAVE_PRESETS = {
+    "ripple":    {"c": 0.3, "damping": 0.002, "name": "Ripple (single drop)"},
+    "pluck":     {"c": 0.4, "damping": 0.001, "name": "Pluck (guitar string)"},
+    "drum":      {"c": 0.25, "damping": 0.003, "name": "Drum (membrane)"},
+    "ocean":     {"c": 0.35, "damping": 0.0005, "name": "Ocean (low damping)"},
+    "resonance": {"c": 0.45, "damping": 0.0002, "name": "Resonance (standing waves)"},
+}
+WAVE_PRESET_NAMES = list(WAVE_PRESETS.keys())
+
+# Module-level wave state
+_wave_u = None       # current displacement field
+_wave_u_prev = None  # previous displacement field
+_wave_rows = 0
+_wave_cols = 0
+_wave_c = 0.3        # wave speed
+_wave_damping = 0.002  # damping coefficient
+_wave_preset_idx = 0
+
+
+def _wave_init(rows, cols, preset_name=None):
+    """Initialize the 2D wave equation simulation."""
+    global _wave_u, _wave_u_prev, _wave_rows, _wave_cols
+    global _wave_c, _wave_damping, _wave_preset_idx
+    import random as _rng
+
+    _wave_rows, _wave_cols = rows, cols
+
+    if preset_name is None:
+        preset_name = WAVE_PRESET_NAMES[_wave_preset_idx]
+    elif preset_name in WAVE_PRESETS:
+        _wave_preset_idx = WAVE_PRESET_NAMES.index(preset_name)
+
+    p = WAVE_PRESETS[preset_name]
+    _wave_c = p["c"]
+    _wave_damping = p["damping"]
+
+    if _HAS_NUMPY:
+        _wave_u = np.zeros((rows, cols), dtype=float)
+        _wave_u_prev = np.zeros((rows, cols), dtype=float)
+    else:
+        _wave_u = [[0.0] * cols for _ in range(rows)]
+        _wave_u_prev = [[0.0] * cols for _ in range(rows)]
+
+    # Drop an initial stone in the center
+    _wave_drop_stone(rows // 2, cols // 2, 1.0)
+
+
+def _wave_drop_stone(r, c, amplitude, radius=3):
+    """Drop a Gaussian impulse at (r, c) to create expanding ring waves."""
+    global _wave_u
+    rows, cols = _wave_rows, _wave_cols
+    if _HAS_NUMPY:
+        for dr in range(-radius * 2, radius * 2 + 1):
+            for dc in range(-radius * 2, radius * 2 + 1):
+                rr, cc = r + dr, c + dc
+                if 0 <= rr < rows and 0 <= cc < cols:
+                    dist2 = dr * dr + dc * dc
+                    _wave_u[rr, cc] += amplitude * math.exp(-dist2 / (2.0 * radius * radius))
+    else:
+        for dr in range(-radius * 2, radius * 2 + 1):
+            for dc in range(-radius * 2, radius * 2 + 1):
+                rr, cc = r + dr, c + dc
+                if 0 <= rr < rows and 0 <= cc < cols:
+                    dist2 = dr * dr + dc * dc
+                    _wave_u[rr][cc] += amplitude * math.exp(-dist2 / (2.0 * radius * radius))
+
+
+def _wave_step_numpy():
+    """Advance the wave equation one time step using NumPy (Verlet integration)."""
+    global _wave_u, _wave_u_prev
+
+    c2 = _wave_c * _wave_c
+    damp = 1.0 - _wave_damping
+
+    # 5-point Laplacian via rolls
+    lap = (np.roll(_wave_u, 1, axis=0) + np.roll(_wave_u, -1, axis=0) +
+           np.roll(_wave_u, 1, axis=1) + np.roll(_wave_u, -1, axis=1) -
+           4.0 * _wave_u)
+
+    # Verlet integration: u_next = 2*u - u_prev + c²*lap
+    u_next = 2.0 * _wave_u - _wave_u_prev + c2 * lap
+    u_next *= damp
+
+    # Fixed (zero) boundary conditions
+    u_next[0, :] = 0.0
+    u_next[-1, :] = 0.0
+    u_next[:, 0] = 0.0
+    u_next[:, -1] = 0.0
+
+    _wave_u_prev = _wave_u
+    _wave_u = u_next
+
+
+def _wave_step():
+    """Advance the wave equation one time step using pure Python."""
+    global _wave_u, _wave_u_prev
+    rows, cols = _wave_rows, _wave_cols
+    c2 = _wave_c * _wave_c
+    damp = 1.0 - _wave_damping
+
+    u_next = [[0.0] * cols for _ in range(rows)]
+    for r in range(1, rows - 1):
+        for c in range(1, cols - 1):
+            lap = (_wave_u[r - 1][c] + _wave_u[r + 1][c] +
+                   _wave_u[r][c - 1] + _wave_u[r][c + 1] -
+                   4.0 * _wave_u[r][c])
+            u_next[r][c] = (2.0 * _wave_u[r][c] - _wave_u_prev[r][c] + c2 * lap) * damp
+
+    _wave_u_prev = _wave_u
+    _wave_u = u_next
+
+
+def _wave_to_grid(rows, cols):
+    """Convert wave displacement field to display grid (0-100)."""
+    grid = [[0] * cols for _ in range(rows)]
+
+    if _HAS_NUMPY:
+        u = _wave_u if isinstance(_wave_u, np.ndarray) else np.array(_wave_u)
+        u_max = max(np.max(np.abs(u)), 1e-8)
+        display = 50.0 + 50.0 * u / u_max
+        display = np.clip(display, 0, 100).astype(int)
+        for r in range(min(rows, display.shape[0])):
+            for c in range(min(cols, display.shape[1])):
+                grid[r][c] = int(display[r, c])
+    else:
+        u_max = 1e-8
+        for r in range(rows):
+            for c in range(cols):
+                v = abs(_wave_u[r][c])
+                if v > u_max:
+                    u_max = v
+        for r in range(rows):
+            for c in range(cols):
+                grid[r][c] = max(0, min(100, int(50.0 + 50.0 * _wave_u[r][c] / u_max)))
+    return grid
+
+
+def _wave_color(val):
+    """Map wave displacement grid value (0-100) to curses color pair.
+
+    0-20 = deep negative (blue), 20-40 = mild negative (cyan),
+    40-60 = quiescent (dark), 60-80 = mild positive (yellow/green),
+    80-100 = strong positive (white).
+    """
+    if val <= 15:
+        return 6       # blue — deep trough
+    elif val <= 30:
+        return 5       # cyan — mild trough
+    elif val <= 45:
+        return 19      # near-black — quiescent (negative side)
+    elif val <= 55:
+        return 19      # near-black — quiescent (center)
+    elif val <= 70:
+        return 1       # green — mild crest
+    elif val <= 85:
+        return 15      # yellow — strong crest
+    else:
+        return 20      # bright white — peak crest
+
+
+def _wave_value_to_rgb(val):
+    """Map wave displacement grid value (0-100) to RGB for PNG rendering."""
+    if val <= 20:
+        t = val / 20.0
+        return (0, 0, int(200 * t))              # black -> blue
+    elif val <= 40:
+        t = (val - 20) / 20.0
+        return (0, int(180 * t), 200)             # blue -> cyan
+    elif val <= 60:
+        t = (val - 40) / 20.0
+        b = int(200 * (1 - t))
+        return (0, int(180 * (1 - t)), b)         # cyan -> dark
+    elif val <= 80:
+        t = (val - 60) / 20.0
+        return (int(200 * t), int(220 * t), 0)    # dark -> yellow
+    else:
+        t = (val - 80) / 20.0
+        return (200 + int(55 * t), 220 + int(35 * t), int(255 * t))  # yellow -> white
+
+
 # --- Boids Flocking Simulation ---
 # Craig Reynolds' classic Boids algorithm: each agent ("boid") follows three
 # simple rules — separation (avoid crowding), alignment (steer toward average
@@ -5389,6 +5581,13 @@ def place_pattern(grid, name, row_off=None, col_off=None):
 def step(grid, rule=None):
     if rule is None:
         rule = RULES["life"]
+    if _is_wave(rule):
+        rows, cols = len(grid), len(grid[0])
+        if _HAS_NUMPY:
+            _wave_step_numpy()
+        else:
+            _wave_step()
+        return _wave_to_grid(rows, cols)
     if _is_wfc(rule):
         rows, cols = len(grid), len(grid[0])
         _wfc_step()
@@ -6043,7 +6242,7 @@ def _render_braille_grid(grid, rows, cols, term_rows, term_cols):
     return lines
 
 
-def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=False, wator=False, fallingsand=False, sandpile=False, dla=False, particlelife=False, fluid=False):
+def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=False, wator=False, fallingsand=False, sandpile=False, dla=False, particlelife=False, fluid=False, wave=False):
     """Pick the curses color pair for a Braille cell based on majority vote.
 
     Examines the 2×4 block of grid cells that map to terminal position (tr, tc)
@@ -6065,6 +6264,9 @@ def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=Fals
                         counts[cp] = counts.get(cp, 0) + 1
                 elif fluid:
                     cp = _lbm_color(age)
+                    counts[cp] = counts.get(cp, 0) + 1
+                elif wave:
+                    cp = _wave_color(age)
                     counts[cp] = counts.get(cp, 0) + 1
                 elif particlelife:
                     if age:
@@ -6235,7 +6437,7 @@ def _gif_sub_blocks(data):
     return bytes(result)
 
 
-def export_gif(history_frames, rows, cols, filepath, cell_size=4, delay_cs=10, wireworld=False, grayscott=False, lenia=False):
+def export_gif(history_frames, rows, cols, filepath, cell_size=4, delay_cs=10, wireworld=False, grayscott=False, lenia=False, wave=False):
     """Export a list of grid snapshots as an animated GIF.
 
     Args:
@@ -6294,7 +6496,7 @@ def export_gif(history_frames, rows, cols, filepath, cell_size=4, delay_cs=10, w
             for c in range(cols):
                 if wireworld:
                     idx = _wireworld_to_gif_index(frame_grid[r][c])
-                elif grayscott or lenia:
+                elif grayscott or lenia or wave:
                     idx = _gs_to_gif_index(frame_grid[r][c])
                 else:
                     idx = _age_to_gif_index(frame_grid[r][c])
@@ -6438,7 +6640,7 @@ def _png_chunk(chunk_type, data):
 
 def render_png(grid, rows, cols, filepath, cell_size=8, palette_name="classic",
                grid_lines=False, grid_line_color=None, wireworld=False, aa=True,
-               grayscott=False, lenia=False):
+               grayscott=False, lenia=False, wave=False):
     """Render a single grid frame as a high-resolution PNG image.
 
     Args:
@@ -6462,7 +6664,12 @@ def render_png(grid, rows, cols, filepath, cell_size=8, palette_name="classic",
 
     # Build color index map for the grid
     # For Gray-Scott, color_map stores direct RGB tuples instead of indices
-    if grayscott or lenia:
+    if wave:
+        color_map = [[(0, 0, 0)] * cols for _ in range(rows)]
+        for r in range(rows):
+            for c in range(cols):
+                color_map[r][c] = _wave_value_to_rgb(grid[r][c])
+    elif grayscott or lenia:
         color_map = [[(0, 0, 0)] * cols for _ in range(rows)]
         for r in range(rows):
             for c in range(cols):
@@ -6506,7 +6713,7 @@ def render_png(grid, rows, cols, filepath, cell_size=8, palette_name="classic",
                     continue
 
             cm = color_map[cell_r][cell_c]
-            if grayscott or lenia:
+            if grayscott or lenia or wave:
                 base_color = cm  # already RGB tuple
             else:
                 base_color = palette[cm]
@@ -6608,6 +6815,7 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
     ig = _is_ising(rule)
     cc = _is_cca(rule)
     fl = _is_fluid(rule)
+    wv = _is_wave(rule)
 
     # Initialize grid
     grid = make_grid(rows, cols)
@@ -6644,6 +6852,9 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
     elif fl:
         _lbm_init(rows, cols)
         grid = _lbm_to_grid(rows, cols)
+    elif wv:
+        _wave_init(rows, cols)
+        grid = _wave_to_grid(rows, cols)
     elif ww and not load_path:
         place_wireworld_pattern(grid, "ww_clock")
     else:
@@ -6661,7 +6872,7 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
         render_png(grid, rows, cols, fpath,
                    cell_size=cell_size, palette_name=palette_name,
                    grid_lines=grid_lines, grid_line_color=grid_line_color,
-                   wireworld=ww, aa=aa, grayscott=gs or ph, lenia=ln)
+                   wireworld=ww, aa=aa, grayscott=gs or ph, lenia=ln, wave=wv)
 
         if gen % 10 == 0 or gen == generations - 1:
             print(f"  [{gen + 1}/{generations}] {fname}")
@@ -7440,7 +7651,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
     sound = SoundEngine()
 
     # Topology mode
-    global _topology, _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _fs_preset_idx, _chimera_preset_idx
+    global _topology, _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _fs_preset_idx, _chimera_preset_idx, _wave_preset_idx
     topo_idx = 0  # index into TOPOLOGIES
     _topology = TOPOLOGIES[topo_idx]
 
@@ -7473,6 +7684,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         particlelife = _is_particlelife(rule)
         fluid = _is_fluid(rule)
         boids = _is_boids(rule)
+        wave = _is_wave(rule)
 
         # Track population
         pop = _count_population(grid)
@@ -7541,7 +7753,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     ch = braille_lines[tr][tc]
                     if ch == chr(_BRAILLE_BASE):
                         continue  # empty — skip for speed
-                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia or physarum, turmite=turmite, wator=wator, fallingsand=fallingsand, sandpile=sandpile, dla=dla, particlelife=particlelife, fluid=fluid)
+                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia or physarum, turmite=turmite, wator=wator, fallingsand=fallingsand, sandpile=sandpile, dla=dla, particlelife=particlelife, fluid=fluid, wave=wave)
                     try:
                         stdscr.addstr(tr, tc, ch, curses.color_pair(cp))
                     except curses.error:
@@ -7574,6 +7786,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                         attr = curses.color_pair(12)
                     elif fluid:
                         attr = curses.color_pair(_lbm_color(age))
+                        cell_str = "\u2588\u2588"
+                    elif wave:
+                        attr = curses.color_pair(_wave_color(age))
                         cell_str = "\u2588\u2588"
                     elif forestfire:
                         attr = curses.color_pair(_ff_color(age))
@@ -7691,8 +7906,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
             ff_str = f" | p={_ff_p_grow:.4f} f={_ff_f_lightning:.5f} [<>]preset" if forestfire else ""
             ising_str = f" | T={_ising_temperature:.3f} [t]cool [y]heat [<>]preset" if ising else ""
             chimera_str = f" | {CHIMERA_PRESETS[CHIMERA_PRESET_NAMES[_chimera_preset_idx]]['desc']} [<>]preset" if chimera else ""
+            wave_str = f" | c={_wave_c:.2f} damp={_wave_damping:.4f} [<>]preset" if wave else ""
             boids_str = f" | {BOIDS_PRESETS[BOIDS_PRESET_NAMES[_boids_preset_idx]]['name']} n={_boids_n} [<>]preset" if boids else ""
-            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{topo_str}{hashlife_str}{gs_str}{eca_str}{turmite_str}{wator_str}{ff_str}{ising_str}{chimera_str}{boids_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [T]opo [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
+            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{topo_str}{hashlife_str}{gs_str}{eca_str}{turmite_str}{wator_str}{ff_str}{ising_str}{chimera_str}{wave_str}{boids_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [T]opo [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
@@ -8085,6 +8301,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_chimera = chimera
                 was_pl = particlelife
                 was_fluid = fluid
+                was_wave = wave
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -8106,10 +8323,11 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_chimera = _is_chimera(rule)
                 new_pl = _is_particlelife(rule)
                 new_fluid = _is_fluid(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca or new_chimera or new_pl or new_fluid:
+                new_wave = _is_wave(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca or new_chimera or new_pl or new_fluid or new_wave:
                     hashlife_active = False
                 # Mode transition: clear grid and re-initialize
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca or was_chimera != new_chimera or was_pl != new_pl or was_fluid != new_fluid:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca or was_chimera != new_chimera or was_pl != new_pl or was_fluid != new_fluid or was_wave != new_wave:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -8155,6 +8373,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_fluid:
                         _lbm_init(rows, cols)
                         grid = _lbm_to_grid(rows, cols)
+                    elif new_wave:
+                        _wave_init(rows, cols)
+                        grid = _wave_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -8267,6 +8488,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 elif fluid:
                     _lbm_init(rows, cols)
                     grid = _lbm_to_grid(rows, cols)
+                elif wave:
+                    _wave_init(rows, cols)
+                    grid = _wave_to_grid(rows, cols)
                 else:
                     import random
                     for r2 in range(rows):
@@ -8296,6 +8520,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_chimera = chimera
                 was_pl = particlelife
                 was_fluid = fluid
+                was_wave = wave
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -8317,9 +8542,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_chimera = _is_chimera(rule)
                 new_pl = _is_particlelife(rule)
                 new_fluid = _is_fluid(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca or new_chimera or new_pl or new_fluid:
+                new_wave = _is_wave(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca or new_chimera or new_pl or new_fluid or new_wave:
                     hashlife_active = False
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca or was_chimera != new_chimera or was_pl != new_pl or was_fluid != new_fluid:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca or was_chimera != new_chimera or was_pl != new_pl or was_fluid != new_fluid or was_wave != new_wave:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -8368,6 +8594,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_fluid:
                         _lbm_init(rows, cols)
                         grid = _lbm_to_grid(rows, cols)
+                    elif new_wave:
+                        _wave_init(rows, cols)
+                        grid = _wave_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -8820,6 +9049,28 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 hist_idx = 0
                 browsing_history = False
                 pop_history = []
+            elif key == ord("<") and wave:
+                _wave_preset_idx = (_wave_preset_idx - 1) % len(WAVE_PRESET_NAMES)
+                preset_name = WAVE_PRESET_NAMES[_wave_preset_idx]
+                rule["name"] = f"Wave Equation ({WAVE_PRESETS[preset_name]['name']})"
+                _wave_init(rows, cols, preset_name)
+                grid = _wave_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord(">") and wave:
+                _wave_preset_idx = (_wave_preset_idx + 1) % len(WAVE_PRESET_NAMES)
+                preset_name = WAVE_PRESET_NAMES[_wave_preset_idx]
+                rule["name"] = f"Wave Equation ({WAVE_PRESETS[preset_name]['name']})"
+                _wave_init(rows, cols, preset_name)
+                grid = _wave_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
             elif key == ord("<") and fluid:
                 # Previous LBM Fluid preset
                 _lbm_preset_idx = (_lbm_preset_idx - 1) % len(LBM_PRESET_NAMES)
@@ -8906,7 +9157,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     try:
                         export_gif(history, rows, cols, gif_path,
                                    cell_size=4, delay_cs=max(1, int(delay * 100)),
-                                   wireworld=ww, grayscott=gs, lenia=lenia)
+                                   wireworld=ww, grayscott=gs, lenia=lenia, wave=wave)
                         export_msg = f" Saved {gif_path}"
                     except (OSError, IOError) as exc:
                         export_msg = f" GIF export failed: {exc}"
@@ -9230,6 +9481,16 @@ def _save_module_state(rule):
             "_lbm_buoyancy": _lbm_buoyancy,
             "_lbm_temperature": copy.deepcopy(_lbm_temperature),
         })
+    elif _is_wave(rule):
+        state.update({
+            "_wave_u": copy.deepcopy(_wave_u),
+            "_wave_u_prev": copy.deepcopy(_wave_u_prev),
+            "_wave_rows": _wave_rows,
+            "_wave_cols": _wave_cols,
+            "_wave_c": _wave_c,
+            "_wave_damping": _wave_damping,
+            "_wave_preset_idx": _wave_preset_idx,
+        })
     elif _is_wfc(rule):
         state.update({
             "_wfc_possible": copy.deepcopy(_wfc_possible),
@@ -9439,6 +9700,16 @@ def _restore_module_state(rule, state):
         _lbm_inflow_speed = state["_lbm_inflow_speed"]
         _lbm_buoyancy = state["_lbm_buoyancy"]
         _lbm_temperature = state["_lbm_temperature"]
+    elif _is_wave(rule):
+        global _wave_u, _wave_u_prev, _wave_rows, _wave_cols
+        global _wave_c, _wave_damping, _wave_preset_idx
+        _wave_u = state["_wave_u"]
+        _wave_u_prev = state["_wave_u_prev"]
+        _wave_rows = state["_wave_rows"]
+        _wave_cols = state["_wave_cols"]
+        _wave_c = state["_wave_c"]
+        _wave_damping = state["_wave_damping"]
+        _wave_preset_idx = state["_wave_preset_idx"]
     elif _is_wfc(rule):
         global _wfc_possible, _wfc_collapsed, _wfc_rows, _wfc_cols, _wfc_preset_idx
         global _wfc_tiles, _wfc_weights, _wfc_collapses_per_step, _wfc_adjacency
@@ -9493,6 +9764,8 @@ def _restore_module_state(rule, state):
 
 def _cell_color_pair(age, rule):
     """Return the curses color-pair number for a cell value under *rule*."""
+    if _is_wave(rule):
+        return _wave_color(age)
     if _is_wfc(rule):
         return _wfc_color(age)
     if _is_boids(rule):
@@ -9528,6 +9801,8 @@ def _cell_color_pair(age, rule):
 
 def _cell_str(age, rule):
     """Return the two-char display string for a cell value under *rule*."""
+    if _is_wave(rule):
+        return "\u2588\u2588"  # always full block for continuous wave field
     if _is_wfc(rule):
         if age == 0:
             return "\u2591\u2591"  # full superposition — light shade
@@ -10638,6 +10913,13 @@ def main():
              "Options: " + ", ".join(WFC_PRESETS.keys()),
     )
     parser.add_argument(
+        "--wave-preset",
+        choices=list(WAVE_PRESETS.keys()),
+        default="ripple",
+        help="Wave Equation preset when --rule wave (default: ripple). "
+             "Options: " + ", ".join(WAVE_PRESETS.keys()),
+    )
+    parser.add_argument(
         "--discover",
         action="store_true",
         default=False,
@@ -10834,6 +11116,9 @@ def main():
             elif _is_fluid(rule):
                 _lbm_init(r, c)
                 g = _lbm_to_grid(r, c)
+            elif _is_wave(rule):
+                _wave_init(r, c)
+                g = _wave_to_grid(r, c)
             elif _is_boids(rule):
                 _boids_init(r, c)
                 g = _boids_to_grid(r, c)
@@ -11046,6 +11331,14 @@ def main():
             rule["name"] = f"WFC ({preset['name']})"
         _wfc_init(args.rows, args.cols, wfc_preset_name)
         grid = _wfc_to_grid(args.rows, args.cols)
+    elif args.rule.lower() == "wave":
+        wave_preset_name = args.wave_preset
+        if wave_preset_name in WAVE_PRESETS:
+            _wave_preset_idx = WAVE_PRESET_NAMES.index(wave_preset_name)
+            preset = WAVE_PRESETS[wave_preset_name]
+            rule["name"] = f"Wave Equation ({preset['name']})"
+        _wave_init(args.rows, args.cols, wave_preset_name)
+        grid = _wave_to_grid(args.rows, args.cols)
     elif args.rule.lower() == "sandpile":
         # Abelian Sandpile self-organized criticality
         sp_preset_name = args.sandpile_preset
