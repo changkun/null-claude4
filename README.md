@@ -1,6 +1,6 @@
 # Cellular Automaton — Terminal Simulator
 
-A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, the **Ising Model** statistical mechanics spin simulation, the **Cyclic Cellular Automaton** (CCA) spiral wave generator, the **Chimera Grid** multi-rule coexistence mode, **Particle Life** emergent multi-species particle interactions, **Lattice Boltzmann** D2Q9 fluid dynamics, **Boids** flocking/swarming simulation, **Wave Function Collapse** (WFC) constraint-based procedural generation, the **2D Wave Equation** damped membrane simulation, a **split-screen comparison mode** for watching two simulations side-by-side, a **demo reel** screensaver that auto-cycles through all modes, and supports arbitrary rules via B/S notation.
+A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, the **Ising Model** statistical mechanics spin simulation, the **Cyclic Cellular Automaton** (CCA) spiral wave generator, the **Chimera Grid** multi-rule coexistence mode, **Particle Life** emergent multi-species particle interactions, **Lattice Boltzmann** D2Q9 fluid dynamics, **Boids** flocking/swarming simulation, **Wave Function Collapse** (WFC) constraint-based procedural generation, the **2D Wave Equation** damped membrane simulation, **SPH Fluid** Lagrangian particle-based hydrodynamics, a **split-screen comparison mode** for watching two simulations side-by-side, a **demo reel** screensaver that auto-cycles through all modes, and supports arbitrary rules via B/S notation.
 
 ## Usage
 
@@ -63,12 +63,15 @@ python3 life.py --rule wfc --wfc-preset fabric                              # wo
 python3 life.py --rule wave                                                    # 2D Wave Equation (ripple)
 python3 life.py --rule wave --wave-preset resonance                            # standing wave resonance patterns
 python3 life.py --rule wave --wave-preset ocean                                # low-damping ocean waves
+python3 life.py --rule sph                                                        # SPH fluid (dam break)
+python3 life.py --rule sph --sph-preset drop                                     # droplet splash into pool
+python3 life.py --rule sph --sph-preset fountain                                 # central upward jet
 python3 life.py --script probabilistic_life        # run a user script on startup
 python3 life.py --script ~/my_script.py            # run a script from a file path
 python3 life.py --compare life highlife              # split-screen: Life vs HighLife
 python3 life.py --compare B36/S23 forestfire         # split-screen: custom rule vs Forest Fire
 python3 life.py --compare ising grayscott            # split-screen: Ising Model vs Gray-Scott
-python3 life.py --demo                            # demo reel: auto-cycle all 27 modes
+python3 life.py --demo                            # demo reel: auto-cycle all 28 modes
 python3 life.py --demo --demo-interval 5          # 5 seconds per mode
 python3 life.py --demo --speed 0.05               # faster simulation steps in demo
 python3 life.py --discover                         # evolve interesting rulesets via GA
@@ -86,7 +89,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--speed`   | 0.1       | Delay between generations (seconds)  |
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
 | `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
-| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, `sandpile`, `dla`, `forestfire`, `ising`, `cca`, `chimera`, `particlelife`, `fluid`, `boids`, `wfc`, `wave`, or B/S notation (e.g. `B36/S23`) |
+| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, `sandpile`, `dla`, `forestfire`, `ising`, `cca`, `chimera`, `particlelife`, `fluid`, `boids`, `wfc`, `wave`, `sph`, or B/S notation (e.g. `B36/S23`) |
 | `--gs-preset` | `mitosis` | Gray-Scott parameter preset (`mitosis`, `coral`, `solitons`, `maze`, `spots`, `worms`, `waves`, `bubbles`) |
 | `--lenia-preset` | `orbium` | Lenia species preset (`orbium`, `geminium`, `scutium`, `hydrogeminium`, `wanderer`, `smooth_life`) |
 | `--eca-rule` | 30        | Wolfram rule number (0–255) for Elementary CA mode |
@@ -105,6 +108,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--boids-preset` | `flock` | Boids flocking preset (`flock`, `predator`, `obstacle`, `murmuration`, `vortex`) |
 | `--wfc-preset` | `pipes` | WFC tile preset (`pipes`, `terrain`, `circuits`, `fabric`) |
 | `--wave-preset` | `ripple` | Wave Equation preset (`ripple`, `pluck`, `drum`, `ocean`, `resonance`) |
+| `--sph-preset` | `dam` | SPH Fluid preset (`dam`, `drop`, `wave`, `fountain`) |
 | `--script`  | —         | Run a Python script on startup (path or name from `~/.life-scripts/`) |
 | `--discover` | off      | Launch genetic algorithm rule discovery mode |
 | `--ga-generations` | 50 | Number of GA generations in discovery mode |
@@ -136,7 +140,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `B`       | Toggle Braille high-density rendering |
 | `T`       | Cycle topology (Torus → Klein Bottle → Möbius Strip → Bounded) |
 | `H`       | Toggle HashLife hyperspeed mode   |
-| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode; cycle Physarum presets in Physarum mode; cycle Sandpile presets in Sandpile mode; cycle DLA presets in DLA mode; cycle Forest Fire presets in Forest Fire mode; cycle Ising presets in Ising mode; cycle CCA presets in Cyclic CA mode; cycle Particle Life presets in Particle Life mode; cycle LBM Fluid presets in Fluid mode; cycle Boids presets in Boids mode; cycle Wave Equation presets in Wave mode |
+| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode; cycle Physarum presets in Physarum mode; cycle Sandpile presets in Sandpile mode; cycle DLA presets in DLA mode; cycle Forest Fire presets in Forest Fire mode; cycle Ising presets in Ising mode; cycle CCA presets in Cyclic CA mode; cycle Particle Life presets in Particle Life mode; cycle LBM Fluid presets in Fluid mode; cycle Boids presets in Boids mode; cycle Wave Equation presets in Wave mode; cycle SPH Fluid presets in SPH mode |
 | `t` / `y` | Decrease / increase temperature in Ising Model mode |
 | `W`       | Enter a specific Wolfram rule number (0–255) in Elementary CA mode |
 | `G`       | Export history as animated GIF    |
@@ -230,6 +234,7 @@ All rules use Birth/Survival notation — a cell is born if it has exactly B nei
 | `fluid`        | *(lattice Boltzmann)* | D2Q9 fluid dynamics — see [LBM Fluid Dynamics](#lbm-fluid-dynamics--lattice-boltzmann-method) below |
 | `boids`          | *(agent-based)* | Flocking/swarming simulation — see [Boids](#boids--flocking-simulation) below |
 | `wave`           | *(wave equation)* | Damped 2D membrane simulation — see [Wave Equation](#wave-equation--2d-membrane-simulation) below |
+| `sph`            | *(particle hydro)* | Lagrangian SPH fluid — see [SPH Fluid](#sph-fluid--smoothed-particle-hydrodynamics) below |
 
 Use `--rule <preset>` or `--rule B.../S...` for custom rules. Press `R` at runtime to cycle through presets.
 
@@ -1073,6 +1078,62 @@ Both terminal (curses + Braille) and headless PNG rendering use this gradient. G
 - **Split-screen** — fully supported. Complete wave state (displacement fields, parameters) is saved/restored for independent pane simulation.
 - **Randomize** (`r`) — reinitializes the membrane and drops a fresh stone at center.
 
+## SPH Fluid — Smoothed Particle Hydrodynamics
+
+A Lagrangian particle-based fluid simulation where each particle carries mass, position, velocity, density, and pressure. SPH smoothing kernels (Poly6, Spiky gradient, Viscosity Laplacian) interpolate physical quantities over particle neighborhoods, producing realistic splashing, pooling, and wave behavior rendered as density fields in the terminal.
+
+This complements the grid-based [LBM Fluid](#lbm-fluid-dynamics--lattice-boltzmann-method) mode by showing the particle-tracking (Lagrangian) side of computational fluid dynamics. Where LBM solves on a fixed Eulerian grid, SPH tracks individual fluid parcels — making it naturally suited for free-surface flows, splashing, and scenarios with large deformations.
+
+### Starting SPH Fluid
+
+```bash
+python3 life.py --rule sph                        # default dam break preset
+python3 life.py --rule sph --sph-preset drop       # droplet splash into pool
+python3 life.py --rule sph --sph-preset wave       # sinusoidal standing wave
+python3 life.py --rule sph --sph-preset fountain   # central upward jet
+```
+
+### Parameter Presets
+
+Press `<` / `>` at runtime to cycle through presets:
+
+| Preset     | Particles | Gravity | Viscosity | Visual character                          |
+|------------|-----------|---------|-----------|-------------------------------------------|
+| `dam`      | 400       | 0.40    | 0.8       | Left-wall block collapses — classic dam break |
+| `drop`     | 350       | 0.50    | 0.6       | Pool with overhead droplet cluster — splash dynamics |
+| `wave`     | 500       | 0.30    | 1.0       | Sinusoidal surface — standing wave oscillation |
+| `fountain` | 450       | 0.35    | 0.7       | Bottom pool with central upward jet          |
+
+### SPH Kernels
+
+Three standard SPH smoothing kernels are used:
+
+- **Poly6** — density estimation: smooth, computationally efficient, non-negative within the smoothing radius *h*
+- **Spiky gradient** — pressure force: peaked at the origin so nearby particles generate strong repulsion, preventing particle clumping
+- **Viscosity Laplacian** — viscous diffusion: always positive, ensuring viscosity dissipates energy rather than amplifying it
+
+### Rendering
+
+Particle density is projected onto the display grid (0–100 scale) and mapped to a water-themed color gradient:
+
+- **Dark/Black** — empty (no particles nearby)
+- **Blue** — low density regions
+- **Cyan** — moderate density
+- **White** — high density (deep fluid pools)
+
+Both terminal (curses + Braille) and headless PNG rendering use this gradient. GIF export is fully supported.
+
+### NumPy Acceleration
+
+When NumPy is available, SPH uses a vectorized O(n²) pairwise-distance matrix approach for density and force computation. Without NumPy, a pure-Python fallback is used. The NumPy path is significantly faster for the default particle counts (350–500).
+
+### Interactions
+
+- **HashLife** — incompatible (continuous particle system, not discrete cells). Switching to SPH auto-deactivates HashLife.
+- **Split-screen** — fully supported. Complete SPH state (particle positions, velocities, densities, pressures, parameters) is saved/restored for independent pane simulation.
+- **Randomize** (`r`) — reinitializes all particles with the current preset's initial distribution.
+- **Demo reel** — included in the automatic mode rotation.
+
 ## Population Statistics Dashboard
 
 Press `g` to toggle a 35-column side panel that provides real-time population analytics:
@@ -1390,7 +1451,7 @@ Press `T` to cycle through four topological surface modes that change how the gr
 
 ## Demo Reel — Auto-Showcase Mode
 
-A screensaver/attract mode that automatically cycles through all 27 simulation modes with smooth fade transitions, a title banner, and a progress bar countdown. Great for showing off the full breadth of the project without touching the keyboard.
+A screensaver/attract mode that automatically cycles through all 28 simulation modes with smooth fade transitions, a title banner, and a progress bar countdown. Great for showing off the full breadth of the project without touching the keyboard.
 
 ```bash
 python3 life.py --demo                    # default: 10 seconds per mode
@@ -1398,7 +1459,7 @@ python3 life.py --demo --demo-interval 5  # 5 seconds per mode
 python3 life.py --demo --speed 0.05       # faster simulation steps
 ```
 
-Each mode auto-initializes with good defaults. A centered banner shows the current mode name and index (e.g., "3/27 Day & Night") with a progress bar counting down to the next transition. Modes transition with an 8-frame crossfade effect.
+Each mode auto-initializes with good defaults. A centered banner shows the current mode name and index (e.g., "3/28 Day & Night") with a progress bar counting down to the next transition. Modes transition with an 8-frame crossfade effect.
 
 ### Controls (Demo mode)
 
@@ -1444,7 +1505,7 @@ Press `Tab` to switch which pane receives input. The active pane is marked with 
 
 Each pane maintains a fully independent simulation state. Before stepping a pane's simulation forward, the engine saves the other pane's module-level globals and restores the current pane's — this allows specialized modes that rely on module state (Gray-Scott concentrations, Wa-Tor population grids, Ising spin lattices, Physarum trail maps, etc.) to coexist without cross-contamination.
 
-All 24+ simulation modes are supported, and you can mix any two freely — compare a B/S cellular automaton against a continuous reaction-diffusion system, watch two Ising models at different temperatures, or pit two Chimera Grid presets against each other.
+All 28 simulation modes are supported, and you can mix any two freely — compare a B/S cellular automaton against a continuous reaction-diffusion system, watch two Ising models at different temperatures, or pit two Chimera Grid presets against each other.
 
 ## Design Notes
 

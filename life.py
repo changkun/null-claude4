@@ -55,6 +55,7 @@ RULES = {
     "boids": {"b": set(), "s": set(), "name": "Boids (Classic Flock)", "boids": True},
     "wfc": {"b": set(), "s": set(), "name": "WFC (Pipes)", "wfc": True},
     "wave": {"b": set(), "s": set(), "name": "Wave Equation (Ripple)", "wave": True},
+    "sph": {"b": set(), "s": set(), "name": "SPH Fluid (Dam Break)", "sph": True},
 }
 
 RULE_NAMES = list(RULES.keys())
@@ -220,6 +221,11 @@ def _is_wfc(rule):
 def _is_wave(rule):
     """Check if the current rule is the 2D Wave Equation simulation."""
     return rule.get("wave", False)
+
+
+def _is_sph(rule):
+    """Check if the current rule is the SPH fluid simulation."""
+    return rule.get("sph", False)
 
 
 # --- Wa-Tor Predator-Prey Ecosystem ---
@@ -3857,6 +3863,454 @@ def _wave_value_to_rgb(val):
         return (200 + int(55 * t), 220 + int(35 * t), int(255 * t))  # yellow -> white
 
 
+# --- Smoothed Particle Hydrodynamics (SPH) Fluid Simulation ---
+# Lagrangian particle-based fluid simulation: each particle carries mass,
+# position, velocity, density, and pressure.  Kernel functions smooth
+# physical quantities over neighborhoods, producing realistic splashing,
+# pooling, and wave behavior.  Complements the grid-based LBM mode by
+# showing the particle-tracking side of computational fluid dynamics.
+
+SPH_PRESETS = {
+    "dam": {
+        "name": "Dam Break",
+        "n_particles": 400,
+        "gravity": 0.4,
+        "rest_density": 1.0,
+        "gas_constant": 2.0,
+        "viscosity": 0.8,
+        "damping": 0.98,
+        "h": 16.0,           # smoothing radius
+        "init": "dam",       # left-wall block
+    },
+    "drop": {
+        "name": "Droplet Splash",
+        "n_particles": 350,
+        "gravity": 0.5,
+        "rest_density": 1.0,
+        "gas_constant": 2.5,
+        "viscosity": 0.6,
+        "damping": 0.97,
+        "h": 16.0,
+        "init": "drop",      # pool + overhead drop
+    },
+    "wave": {
+        "name": "Standing Wave",
+        "n_particles": 500,
+        "gravity": 0.3,
+        "rest_density": 1.0,
+        "gas_constant": 1.8,
+        "viscosity": 1.0,
+        "damping": 0.99,
+        "h": 14.0,
+        "init": "wave",      # sinusoidal surface
+    },
+    "fountain": {
+        "name": "Fountain",
+        "n_particles": 450,
+        "gravity": 0.35,
+        "rest_density": 1.0,
+        "gas_constant": 2.0,
+        "viscosity": 0.7,
+        "damping": 0.98,
+        "h": 15.0,
+        "init": "fountain",  # central upward jet
+    },
+}
+
+SPH_PRESET_NAMES = list(SPH_PRESETS.keys())
+
+# Module-level SPH state
+_sph_x = None       # particle x positions (float, world coords)
+_sph_y = None       # particle y positions
+_sph_vx = None      # particle x velocities
+_sph_vy = None      # particle y velocities
+_sph_rho = None     # density at each particle
+_sph_p = None       # pressure at each particle
+_sph_n = 0          # number of particles
+_sph_h = 16.0       # smoothing radius
+_sph_gravity = 0.4
+_sph_rest_density = 1.0
+_sph_gas_constant = 2.0
+_sph_viscosity = 0.8
+_sph_damping = 0.98
+_sph_world_w = 0.0
+_sph_world_h = 0.0
+_sph_rows = 0
+_sph_cols = 0
+_sph_preset_idx = 0
+
+
+def _sph_init(rows, cols, preset_name=None):
+    """Initialize SPH fluid simulation with particles."""
+    global _sph_x, _sph_y, _sph_vx, _sph_vy, _sph_rho, _sph_p
+    global _sph_n, _sph_h, _sph_gravity, _sph_rest_density
+    global _sph_gas_constant, _sph_viscosity, _sph_damping
+    global _sph_world_w, _sph_world_h, _sph_rows, _sph_cols, _sph_preset_idx
+    import random as _rng
+
+    _sph_rows, _sph_cols = rows, cols
+    _sph_world_w = cols * 4.0
+    _sph_world_h = rows * 4.0
+
+    if preset_name is None:
+        preset_name = SPH_PRESET_NAMES[_sph_preset_idx]
+    elif preset_name in SPH_PRESETS:
+        _sph_preset_idx = SPH_PRESET_NAMES.index(preset_name)
+
+    p = SPH_PRESETS[preset_name]
+    _sph_n = p["n_particles"]
+    _sph_gravity = p["gravity"]
+    _sph_rest_density = p["rest_density"]
+    _sph_gas_constant = p["gas_constant"]
+    _sph_viscosity = p["viscosity"]
+    _sph_damping = p["damping"]
+    _sph_h = p["h"]
+    init_type = p["init"]
+
+    w, h = _sph_world_w, _sph_world_h
+    n = _sph_n
+
+    if init_type == "dam":
+        # Block of particles in the left third
+        _sph_x = [_rng.uniform(w * 0.05, w * 0.35) for _ in range(n)]
+        _sph_y = [_rng.uniform(h * 0.3, h * 0.95) for _ in range(n)]
+    elif init_type == "drop":
+        # Pool at bottom + a cluster of particles above
+        n_pool = int(n * 0.7)
+        n_drop = n - n_pool
+        pool_x = [_rng.uniform(w * 0.1, w * 0.9) for _ in range(n_pool)]
+        pool_y = [_rng.uniform(h * 0.7, h * 0.95) for _ in range(n_pool)]
+        drop_x = [_rng.uniform(w * 0.4, w * 0.6) for _ in range(n_drop)]
+        drop_y = [_rng.uniform(h * 0.05, h * 0.2) for _ in range(n_drop)]
+        _sph_x = pool_x + drop_x
+        _sph_y = pool_y + drop_y
+    elif init_type == "wave":
+        # Particles filling lower half with sinusoidal surface variation
+        _sph_x = []
+        _sph_y = []
+        for i in range(n):
+            px = _rng.uniform(w * 0.05, w * 0.95)
+            # Surface height varies sinusoidally
+            surface = h * 0.5 + h * 0.15 * math.sin(px / w * 4.0 * math.pi)
+            py = _rng.uniform(surface, h * 0.95)
+            _sph_x.append(px)
+            _sph_y.append(py)
+    elif init_type == "fountain":
+        # Particles scattered at bottom, velocities added in step
+        _sph_x = [_rng.uniform(w * 0.1, w * 0.9) for _ in range(n)]
+        _sph_y = [_rng.uniform(h * 0.6, h * 0.95) for _ in range(n)]
+    else:
+        _sph_x = [_rng.uniform(0, w) for _ in range(n)]
+        _sph_y = [_rng.uniform(0, h) for _ in range(n)]
+
+    _sph_vx = [0.0] * n
+    _sph_vy = [0.0] * n
+    _sph_rho = [_sph_rest_density] * n
+    _sph_p = [0.0] * n
+
+
+def _sph_kernel_poly6(r_sq, h):
+    """Poly6 smoothing kernel (for density estimation)."""
+    h_sq = h * h
+    if r_sq >= h_sq:
+        return 0.0
+    diff = h_sq - r_sq
+    # Normalization: 4 / (pi * h^8)  (2D)
+    return 4.0 / (math.pi * h_sq * h_sq * h_sq * h_sq) * diff * diff * diff
+
+
+def _sph_kernel_spiky_grad(r, h):
+    """Spiky kernel gradient magnitude (for pressure force)."""
+    if r >= h or r < 1e-6:
+        return 0.0
+    diff = h - r
+    # -10 / (pi * h^5) * (h - r)^2
+    return -10.0 / (math.pi * h * h * h * h * h) * diff * diff
+
+
+def _sph_kernel_viscosity_lap(r, h):
+    """Viscosity kernel Laplacian (for viscous diffusion)."""
+    if r >= h or r < 1e-6:
+        return 0.0
+    # 20 / (pi * h^5) * (h - r)
+    return 20.0 / (math.pi * h * h * h * h * h) * (h - r)
+
+
+def _sph_step():
+    """Advance the SPH simulation one time step (pure Python)."""
+    global _sph_x, _sph_y, _sph_vx, _sph_vy, _sph_rho, _sph_p
+    n = _sph_n
+    h = _sph_h
+    h_sq = h * h
+    w, ht = _sph_world_w, _sph_world_h
+
+    # 1. Compute density at each particle
+    for i in range(n):
+        rho = 0.0
+        xi, yi = _sph_x[i], _sph_y[i]
+        for j in range(n):
+            dx = _sph_x[j] - xi
+            dy = _sph_y[j] - yi
+            r_sq = dx * dx + dy * dy
+            rho += _sph_kernel_poly6(r_sq, h)
+        _sph_rho[i] = max(rho, 1e-6)
+
+    # 2. Compute pressure from density (equation of state)
+    rho0 = _sph_rest_density
+    k = _sph_gas_constant
+    for i in range(n):
+        _sph_p[i] = k * (_sph_rho[i] - rho0)
+
+    # 3. Compute pressure and viscosity forces
+    fx = [0.0] * n
+    fy = [0.0] * n
+    mu = _sph_viscosity
+
+    for i in range(n):
+        xi, yi = _sph_x[i], _sph_y[i]
+        pi_val = _sph_p[i]
+        rho_i = _sph_rho[i]
+        for j in range(i + 1, n):
+            dx = _sph_x[j] - xi
+            dy = _sph_y[j] - yi
+            r_sq = dx * dx + dy * dy
+            if r_sq >= h_sq or r_sq < 1e-8:
+                continue
+            r = math.sqrt(r_sq)
+            rho_j = _sph_rho[j]
+
+            # Pressure force (symmetric)
+            p_avg = (pi_val + _sph_p[j]) * 0.5
+            grad = _sph_kernel_spiky_grad(r, h)
+            inv_r = 1.0 / r
+            nx_d = dx * inv_r
+            ny_d = dy * inv_r
+            f_press_x = -p_avg * grad * nx_d
+            f_press_y = -p_avg * grad * ny_d
+
+            # Viscosity force
+            lap = _sph_kernel_viscosity_lap(r, h)
+            dvx = _sph_vx[j] - _sph_vx[i]
+            dvy = _sph_vy[j] - _sph_vy[i]
+            f_visc_x = mu * dvx * lap
+            f_visc_y = mu * dvy * lap
+
+            # Apply forces (divided by density)
+            f_total_x = f_press_x + f_visc_x
+            f_total_y = f_press_y + f_visc_y
+            fx[i] += f_total_x / rho_i
+            fy[i] += f_total_y / rho_i
+            fx[j] -= f_total_x / rho_j
+            fy[j] -= f_total_y / rho_j
+
+    # 4. Apply gravity and integrate
+    g = _sph_gravity
+    damp = _sph_damping
+    bounce = 0.3  # coefficient of restitution for wall bounce
+
+    # Fountain: inject upward velocity at center bottom
+    is_fountain = SPH_PRESET_NAMES[_sph_preset_idx] == "fountain"
+
+    for i in range(n):
+        # Gravity
+        fy[i] += g
+
+        # Fountain injection: particles near bottom-center get upward kick
+        if is_fountain:
+            cx = w * 0.5
+            if abs(_sph_x[i] - cx) < w * 0.05 and _sph_y[i] > ht * 0.85:
+                fy[i] -= g * 5.0  # strong upward force
+
+        # Integrate velocity
+        _sph_vx[i] = (_sph_vx[i] + fx[i]) * damp
+        _sph_vy[i] = (_sph_vy[i] + fy[i]) * damp
+
+        # Integrate position
+        _sph_x[i] += _sph_vx[i]
+        _sph_y[i] += _sph_vy[i]
+
+        # Boundary collisions (bounded box, not toroidal)
+        margin = 2.0
+        if _sph_x[i] < margin:
+            _sph_x[i] = margin
+            _sph_vx[i] *= -bounce
+        elif _sph_x[i] > w - margin:
+            _sph_x[i] = w - margin
+            _sph_vx[i] *= -bounce
+        if _sph_y[i] < margin:
+            _sph_y[i] = margin
+            _sph_vy[i] *= -bounce
+        elif _sph_y[i] > ht - margin:
+            _sph_y[i] = ht - margin
+            _sph_vy[i] *= -bounce
+
+
+def _sph_step_numpy():
+    """Advance the SPH simulation one time step using NumPy."""
+    global _sph_x, _sph_y, _sph_vx, _sph_vy, _sph_rho, _sph_p
+    n = _sph_n
+    h = _sph_h
+    h_sq = h * h
+    w, ht = _sph_world_w, _sph_world_h
+
+    x = np.array(_sph_x)
+    y = np.array(_sph_y)
+    vx = np.array(_sph_vx)
+    vy = np.array(_sph_vy)
+
+    # Pairwise distances
+    dx = x[np.newaxis, :] - x[:, np.newaxis]  # dx[i,j] = x[j] - x[i]
+    dy = y[np.newaxis, :] - y[:, np.newaxis]
+    r_sq = dx * dx + dy * dy
+
+    # 1. Density via Poly6 kernel
+    mask = r_sq < h_sq
+    diff = h_sq - r_sq
+    diff = np.where(mask, diff, 0.0)
+    poly6_coeff = 4.0 / (math.pi * h_sq * h_sq * h_sq * h_sq)
+    w_poly6 = poly6_coeff * diff * diff * diff
+    rho = np.sum(w_poly6, axis=1)
+    rho = np.maximum(rho, 1e-6)
+
+    # 2. Pressure (equation of state)
+    p = _sph_gas_constant * (rho - _sph_rest_density)
+
+    # 3. Forces
+    r = np.sqrt(np.where(r_sq < 1e-8, 1e-8, r_sq))
+    inv_r = 1.0 / r
+
+    # Spiky gradient for pressure
+    mask_r = (r < h) & (r > 1e-3)
+    diff_r = h - r
+    spiky_coeff = -10.0 / (math.pi * h * h * h * h * h)
+    grad_spiky = np.where(mask_r, spiky_coeff * diff_r * diff_r, 0.0)
+
+    # Pressure force: -avg(p_i, p_j) * grad_W
+    p_avg = 0.5 * (p[:, np.newaxis] + p[np.newaxis, :])
+    nx_d = dx * inv_r
+    ny_d = dy * inv_r
+    fp_x = -p_avg * grad_spiky * nx_d
+    fp_y = -p_avg * grad_spiky * ny_d
+
+    # Viscosity Laplacian
+    visc_coeff = 20.0 / (math.pi * h * h * h * h * h)
+    lap_visc = np.where(mask_r, visc_coeff * (h - r), 0.0)
+
+    dvx = vx[np.newaxis, :] - vx[:, np.newaxis]
+    dvy = vy[np.newaxis, :] - vy[:, np.newaxis]
+    fv_x = _sph_viscosity * dvx * lap_visc
+    fv_y = _sph_viscosity * dvy * lap_visc
+
+    # Total force per particle (divide by density)
+    total_fx = np.sum(fp_x + fv_x, axis=1) / rho
+    total_fy = np.sum(fp_y + fv_y, axis=1) / rho
+
+    # 4. Gravity
+    total_fy += _sph_gravity
+
+    # Fountain mode
+    if SPH_PRESET_NAMES[_sph_preset_idx] == "fountain":
+        cx = w * 0.5
+        fount_mask = (np.abs(x - cx) < w * 0.05) & (y > ht * 0.85)
+        total_fy = np.where(fount_mask, total_fy - _sph_gravity * 5.0, total_fy)
+
+    # Integrate
+    damp = _sph_damping
+    vx = (vx + total_fx) * damp
+    vy = (vy + total_fy) * damp
+    x = x + vx
+    y = y + vy
+
+    # Boundary collisions
+    margin = 2.0
+    bounce = 0.3
+    # Left/right
+    left = x < margin
+    right = x > w - margin
+    x = np.where(left, margin, np.where(right, w - margin, x))
+    vx = np.where(left | right, vx * -bounce, vx)
+    # Top/bottom
+    top = y < margin
+    bottom = y > ht - margin
+    y = np.where(top, margin, np.where(bottom, ht - margin, y))
+    vy = np.where(top | bottom, vy * -bounce, vy)
+
+    _sph_x = x.tolist()
+    _sph_y = y.tolist()
+    _sph_vx = vx.tolist()
+    _sph_vy = vy.tolist()
+    _sph_rho = rho.tolist()
+    _sph_p = p.tolist()
+
+
+def _sph_to_grid(rows, cols):
+    """Project SPH particles onto a display grid as a density field.
+
+    Cell values 0-100 represent local fluid density for color mapping.
+    """
+    grid = [[0] * cols for _ in range(rows)]
+    # Accumulate density per cell
+    density = [[0.0] * cols for _ in range(rows)]
+    scale_x = _sph_world_w
+    scale_y = _sph_world_h
+
+    for i in range(_sph_n):
+        gc = int(_sph_x[i] / scale_x * cols)
+        gr = int(_sph_y[i] / scale_y * rows)
+        if 0 <= gr < rows and 0 <= gc < cols:
+            density[gr][gc] += 1.0
+
+    # Normalize to 0-100
+    max_d = 0.0
+    for r in range(rows):
+        for c in range(cols):
+            if density[r][c] > max_d:
+                max_d = density[r][c]
+    if max_d < 1e-8:
+        max_d = 1.0
+    for r in range(rows):
+        for c in range(cols):
+            grid[r][c] = max(0, min(100, int(density[r][c] / max_d * 100.0)))
+    return grid
+
+
+def _sph_color(val):
+    """Map SPH density grid value (0-100) to curses color pair.
+
+    0 = empty (dark), low = light blue, medium = cyan, high = white.
+    """
+    if val <= 0:
+        return 19     # near-black — empty
+    elif val <= 10:
+        return 6      # blue — sparse
+    elif val <= 30:
+        return 5      # cyan — light density
+    elif val <= 60:
+        return 1      # green — medium density
+    elif val <= 85:
+        return 15     # yellow — high density
+    else:
+        return 20     # white — peak density
+
+
+def _sph_value_to_rgb(val):
+    """Map SPH density grid value (0-100) to RGB for PNG rendering."""
+    if val <= 5:
+        return (10, 10, 30)                         # dark background
+    elif val <= 25:
+        t = (val - 5) / 20.0
+        return (int(20 * t), int(80 * t), int(200 * t))  # dark -> blue
+    elif val <= 50:
+        t = (val - 25) / 25.0
+        return (int(20 + 60 * t), int(80 + 140 * t), 200)  # blue -> cyan
+    elif val <= 75:
+        t = (val - 50) / 25.0
+        return (int(80 + 175 * t), int(220 + 35 * t), int(200 * (1 - t)))  # cyan -> yellow
+    else:
+        t = (val - 75) / 25.0
+        return (255, 255, int(200 * t + 55))         # yellow -> white
+
+
 # --- Boids Flocking Simulation ---
 # Craig Reynolds' classic Boids algorithm: each agent ("boid") follows three
 # simple rules — separation (avoid crowding), alignment (steer toward average
@@ -5581,6 +6035,13 @@ def place_pattern(grid, name, row_off=None, col_off=None):
 def step(grid, rule=None):
     if rule is None:
         rule = RULES["life"]
+    if _is_sph(rule):
+        rows, cols = len(grid), len(grid[0])
+        if _HAS_NUMPY:
+            _sph_step_numpy()
+        else:
+            _sph_step()
+        return _sph_to_grid(rows, cols)
     if _is_wave(rule):
         rows, cols = len(grid), len(grid[0])
         if _HAS_NUMPY:
@@ -6242,7 +6703,7 @@ def _render_braille_grid(grid, rows, cols, term_rows, term_cols):
     return lines
 
 
-def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=False, wator=False, fallingsand=False, sandpile=False, dla=False, particlelife=False, fluid=False, wave=False):
+def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=False, wator=False, fallingsand=False, sandpile=False, dla=False, particlelife=False, fluid=False, wave=False, sph=False):
     """Pick the curses color pair for a Braille cell based on majority vote.
 
     Examines the 2×4 block of grid cells that map to terminal position (tr, tc)
@@ -6268,6 +6729,10 @@ def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=Fals
                 elif wave:
                     cp = _wave_color(age)
                     counts[cp] = counts.get(cp, 0) + 1
+                elif sph:
+                    if age:
+                        cp = _sph_color(age)
+                        counts[cp] = counts.get(cp, 0) + 1
                 elif particlelife:
                     if age:
                         cp = _pl_color(age)
@@ -6437,7 +6902,7 @@ def _gif_sub_blocks(data):
     return bytes(result)
 
 
-def export_gif(history_frames, rows, cols, filepath, cell_size=4, delay_cs=10, wireworld=False, grayscott=False, lenia=False, wave=False):
+def export_gif(history_frames, rows, cols, filepath, cell_size=4, delay_cs=10, wireworld=False, grayscott=False, lenia=False, wave=False, sph=False):
     """Export a list of grid snapshots as an animated GIF.
 
     Args:
@@ -6496,7 +6961,7 @@ def export_gif(history_frames, rows, cols, filepath, cell_size=4, delay_cs=10, w
             for c in range(cols):
                 if wireworld:
                     idx = _wireworld_to_gif_index(frame_grid[r][c])
-                elif grayscott or lenia or wave:
+                elif grayscott or lenia or wave or sph:
                     idx = _gs_to_gif_index(frame_grid[r][c])
                 else:
                     idx = _age_to_gif_index(frame_grid[r][c])
@@ -6640,7 +7105,7 @@ def _png_chunk(chunk_type, data):
 
 def render_png(grid, rows, cols, filepath, cell_size=8, palette_name="classic",
                grid_lines=False, grid_line_color=None, wireworld=False, aa=True,
-               grayscott=False, lenia=False, wave=False):
+               grayscott=False, lenia=False, wave=False, sph=False):
     """Render a single grid frame as a high-resolution PNG image.
 
     Args:
@@ -6669,6 +7134,11 @@ def render_png(grid, rows, cols, filepath, cell_size=8, palette_name="classic",
         for r in range(rows):
             for c in range(cols):
                 color_map[r][c] = _wave_value_to_rgb(grid[r][c])
+    elif sph:
+        color_map = [[(0, 0, 0)] * cols for _ in range(rows)]
+        for r in range(rows):
+            for c in range(cols):
+                color_map[r][c] = _sph_value_to_rgb(grid[r][c])
     elif grayscott or lenia:
         color_map = [[(0, 0, 0)] * cols for _ in range(rows)]
         for r in range(rows):
@@ -6816,6 +7286,7 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
     cc = _is_cca(rule)
     fl = _is_fluid(rule)
     wv = _is_wave(rule)
+    sp = _is_sph(rule)
 
     # Initialize grid
     grid = make_grid(rows, cols)
@@ -6855,6 +7326,9 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
     elif wv:
         _wave_init(rows, cols)
         grid = _wave_to_grid(rows, cols)
+    elif sp:
+        _sph_init(rows, cols)
+        grid = _sph_to_grid(rows, cols)
     elif ww and not load_path:
         place_wireworld_pattern(grid, "ww_clock")
     else:
@@ -6872,7 +7346,7 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
         render_png(grid, rows, cols, fpath,
                    cell_size=cell_size, palette_name=palette_name,
                    grid_lines=grid_lines, grid_line_color=grid_line_color,
-                   wireworld=ww, aa=aa, grayscott=gs or ph, lenia=ln, wave=wv)
+                   wireworld=ww, aa=aa, grayscott=gs or ph, lenia=ln, wave=wv, sph=sp)
 
         if gen % 10 == 0 or gen == generations - 1:
             print(f"  [{gen + 1}/{generations}] {fname}")
@@ -7685,6 +8159,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         fluid = _is_fluid(rule)
         boids = _is_boids(rule)
         wave = _is_wave(rule)
+        sph = _is_sph(rule)
 
         # Track population
         pop = _count_population(grid)
@@ -7753,7 +8228,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     ch = braille_lines[tr][tc]
                     if ch == chr(_BRAILLE_BASE):
                         continue  # empty — skip for speed
-                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia or physarum, turmite=turmite, wator=wator, fallingsand=fallingsand, sandpile=sandpile, dla=dla, particlelife=particlelife, fluid=fluid, wave=wave)
+                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia or physarum, turmite=turmite, wator=wator, fallingsand=fallingsand, sandpile=sandpile, dla=dla, particlelife=particlelife, fluid=fluid, wave=wave, sph=sph)
                     try:
                         stdscr.addstr(tr, tc, ch, curses.color_pair(cp))
                     except curses.error:
@@ -8302,6 +8777,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_pl = particlelife
                 was_fluid = fluid
                 was_wave = wave
+                was_sph = sph
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -8324,10 +8800,11 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_pl = _is_particlelife(rule)
                 new_fluid = _is_fluid(rule)
                 new_wave = _is_wave(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca or new_chimera or new_pl or new_fluid or new_wave:
+                new_sph = _is_sph(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca or new_chimera or new_pl or new_fluid or new_wave or new_sph:
                     hashlife_active = False
                 # Mode transition: clear grid and re-initialize
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca or was_chimera != new_chimera or was_pl != new_pl or was_fluid != new_fluid or was_wave != new_wave:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca or was_chimera != new_chimera or was_pl != new_pl or was_fluid != new_fluid or was_wave != new_wave or was_sph != new_sph:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -8376,6 +8853,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_wave:
                         _wave_init(rows, cols)
                         grid = _wave_to_grid(rows, cols)
+                    elif new_sph:
+                        _sph_init(rows, cols)
+                        grid = _sph_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -8521,6 +9001,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_pl = particlelife
                 was_fluid = fluid
                 was_wave = wave
+                was_sph = sph
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -8543,9 +9024,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_pl = _is_particlelife(rule)
                 new_fluid = _is_fluid(rule)
                 new_wave = _is_wave(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca or new_chimera or new_pl or new_fluid or new_wave:
+                new_sph = _is_sph(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca or new_chimera or new_pl or new_fluid or new_wave or new_sph:
                     hashlife_active = False
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca or was_chimera != new_chimera or was_pl != new_pl or was_fluid != new_fluid or was_wave != new_wave:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca or was_chimera != new_chimera or was_pl != new_pl or was_fluid != new_fluid or was_wave != new_wave or was_sph != new_sph:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -8597,6 +9079,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_wave:
                         _wave_init(rows, cols)
                         grid = _wave_to_grid(rows, cols)
+                    elif new_sph:
+                        _sph_init(rows, cols)
+                        grid = _sph_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -9071,6 +9556,28 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 hist_idx = 0
                 browsing_history = False
                 pop_history = []
+            elif key == ord("<") and sph:
+                _sph_preset_idx = (_sph_preset_idx - 1) % len(SPH_PRESET_NAMES)
+                preset_name = SPH_PRESET_NAMES[_sph_preset_idx]
+                rule["name"] = f"SPH Fluid ({SPH_PRESETS[preset_name]['name']})"
+                _sph_init(rows, cols, preset_name)
+                grid = _sph_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord(">") and sph:
+                _sph_preset_idx = (_sph_preset_idx + 1) % len(SPH_PRESET_NAMES)
+                preset_name = SPH_PRESET_NAMES[_sph_preset_idx]
+                rule["name"] = f"SPH Fluid ({SPH_PRESETS[preset_name]['name']})"
+                _sph_init(rows, cols, preset_name)
+                grid = _sph_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
             elif key == ord("<") and fluid:
                 # Previous LBM Fluid preset
                 _lbm_preset_idx = (_lbm_preset_idx - 1) % len(LBM_PRESET_NAMES)
@@ -9157,7 +9664,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     try:
                         export_gif(history, rows, cols, gif_path,
                                    cell_size=4, delay_cs=max(1, int(delay * 100)),
-                                   wireworld=ww, grayscott=gs, lenia=lenia, wave=wave)
+                                   wireworld=ww, grayscott=gs, lenia=lenia, wave=wave, sph=sph)
                         export_msg = f" Saved {gif_path}"
                     except (OSError, IOError) as exc:
                         export_msg = f" GIF export failed: {exc}"
@@ -9369,6 +9876,9 @@ def _demo_init_mode(rule_name, rows, cols):
     elif _is_wave(rule):
         _wave_init(rows, cols)
         grid = _wave_to_grid(rows, cols)
+    elif _is_sph(rule):
+        _sph_init(rows, cols)
+        grid = _sph_to_grid(rows, cols)
     else:
         # B/S rule – random fill
         import random as _rnd
@@ -9447,6 +9957,7 @@ def run_demo(stdscr, rows, cols, interval, speed):
         fluid = _is_fluid(rule)
         boids = _is_boids(rule)
         wave = _is_wave(rule)
+        sph = _is_sph(rule)
 
         # Compute fade dimming
         fade_dim = False
@@ -9799,6 +10310,27 @@ def _save_module_state(rule):
             "_wave_damping": _wave_damping,
             "_wave_preset_idx": _wave_preset_idx,
         })
+    elif _is_sph(rule):
+        state.update({
+            "_sph_x": copy.deepcopy(_sph_x),
+            "_sph_y": copy.deepcopy(_sph_y),
+            "_sph_vx": copy.deepcopy(_sph_vx),
+            "_sph_vy": copy.deepcopy(_sph_vy),
+            "_sph_rho": copy.deepcopy(_sph_rho),
+            "_sph_p": copy.deepcopy(_sph_p),
+            "_sph_n": _sph_n,
+            "_sph_h": _sph_h,
+            "_sph_gravity": _sph_gravity,
+            "_sph_rest_density": _sph_rest_density,
+            "_sph_gas_constant": _sph_gas_constant,
+            "_sph_viscosity": _sph_viscosity,
+            "_sph_damping": _sph_damping,
+            "_sph_world_w": _sph_world_w,
+            "_sph_world_h": _sph_world_h,
+            "_sph_rows": _sph_rows,
+            "_sph_cols": _sph_cols,
+            "_sph_preset_idx": _sph_preset_idx,
+        })
     elif _is_wfc(rule):
         state.update({
             "_wfc_possible": copy.deepcopy(_wfc_possible),
@@ -10018,6 +10550,29 @@ def _restore_module_state(rule, state):
         _wave_c = state["_wave_c"]
         _wave_damping = state["_wave_damping"]
         _wave_preset_idx = state["_wave_preset_idx"]
+    elif _is_sph(rule):
+        global _sph_x, _sph_y, _sph_vx, _sph_vy, _sph_rho, _sph_p
+        global _sph_n, _sph_h, _sph_gravity, _sph_rest_density
+        global _sph_gas_constant, _sph_viscosity, _sph_damping
+        global _sph_world_w, _sph_world_h, _sph_rows, _sph_cols, _sph_preset_idx
+        _sph_x = state["_sph_x"]
+        _sph_y = state["_sph_y"]
+        _sph_vx = state["_sph_vx"]
+        _sph_vy = state["_sph_vy"]
+        _sph_rho = state["_sph_rho"]
+        _sph_p = state["_sph_p"]
+        _sph_n = state["_sph_n"]
+        _sph_h = state["_sph_h"]
+        _sph_gravity = state["_sph_gravity"]
+        _sph_rest_density = state["_sph_rest_density"]
+        _sph_gas_constant = state["_sph_gas_constant"]
+        _sph_viscosity = state["_sph_viscosity"]
+        _sph_damping = state["_sph_damping"]
+        _sph_world_w = state["_sph_world_w"]
+        _sph_world_h = state["_sph_world_h"]
+        _sph_rows = state["_sph_rows"]
+        _sph_cols = state["_sph_cols"]
+        _sph_preset_idx = state["_sph_preset_idx"]
     elif _is_wfc(rule):
         global _wfc_possible, _wfc_collapsed, _wfc_rows, _wfc_cols, _wfc_preset_idx
         global _wfc_tiles, _wfc_weights, _wfc_collapses_per_step, _wfc_adjacency
@@ -10072,6 +10627,8 @@ def _restore_module_state(rule, state):
 
 def _cell_color_pair(age, rule):
     """Return the curses color-pair number for a cell value under *rule*."""
+    if _is_sph(rule):
+        return _sph_color(age)
     if _is_wave(rule):
         return _wave_color(age)
     if _is_wfc(rule):
@@ -10109,6 +10666,8 @@ def _cell_color_pair(age, rule):
 
 def _cell_str(age, rule):
     """Return the two-char display string for a cell value under *rule*."""
+    if _is_sph(rule):
+        return "\u2588\u2588" if age else "  "
     if _is_wave(rule):
         return "\u2588\u2588"  # always full block for continuous wave field
     if _is_wfc(rule):
@@ -11228,6 +11787,13 @@ def main():
              "Options: " + ", ".join(WAVE_PRESETS.keys()),
     )
     parser.add_argument(
+        "--sph-preset",
+        choices=list(SPH_PRESETS.keys()),
+        default="dam",
+        help="SPH Fluid preset when --rule sph (default: dam). "
+             "Options: " + ", ".join(SPH_PRESETS.keys()),
+    )
+    parser.add_argument(
         "--demo",
         action="store_true",
         default=False,
@@ -11666,6 +12232,14 @@ def main():
             rule["name"] = f"Wave Equation ({preset['name']})"
         _wave_init(args.rows, args.cols, wave_preset_name)
         grid = _wave_to_grid(args.rows, args.cols)
+    elif args.rule.lower() == "sph":
+        sph_preset_name = args.sph_preset
+        if sph_preset_name in SPH_PRESETS:
+            _sph_preset_idx = SPH_PRESET_NAMES.index(sph_preset_name)
+            preset = SPH_PRESETS[sph_preset_name]
+            rule["name"] = f"SPH Fluid ({preset['name']})"
+        _sph_init(args.rows, args.cols, sph_preset_name)
+        grid = _sph_to_grid(args.rows, args.cols)
     elif args.rule.lower() == "sandpile":
         # Abelian Sandpile self-organized criticality
         sp_preset_name = args.sandpile_preset
