@@ -37,6 +37,7 @@ RULES = {
     "2x2":       {"b": {3, 6}, "s": {1, 2, 5}, "name": "2x2 (B36/S125)"},
     "maze":      {"b": {3}, "s": {1, 2, 3, 4, 5}, "name": "Maze (B3/S12345)"},
     "wireworld": {"b": set(), "s": set(), "name": "Wireworld", "wireworld": True},
+    "grayscott": {"b": set(), "s": set(), "name": "Gray-Scott (Mitosis)", "grayscott": True},
 }
 
 RULE_NAMES = list(RULES.keys())
@@ -112,6 +113,145 @@ WW_CONDUCTOR = 3    # conductor (wire)
 def _is_wireworld(rule):
     """Check if the current rule is the Wireworld automaton."""
     return rule.get("wireworld", False)
+
+
+def _is_grayscott(rule):
+    """Check if the current rule is the Gray-Scott reaction-diffusion model."""
+    return rule.get("grayscott", False)
+
+
+# --- Gray-Scott Reaction-Diffusion ---
+# Continuous-valued reaction-diffusion model:
+#   du/dt = Du*laplacian(u) - u*v^2 + F*(1-u)
+#   dv/dt = Dv*laplacian(v) + u*v^2 - (F+k)*v
+
+GS_DU = 0.2097   # diffusion rate of U
+GS_DV = 0.105    # diffusion rate of V
+GS_DT = 1.0      # time step
+
+GS_PRESETS = {
+    "mitosis":   {"F": 0.0367, "k": 0.0649, "name": "Mitosis (cell splitting)"},
+    "coral":     {"F": 0.0545, "k": 0.062,  "name": "Coral (branching growth)"},
+    "solitons":  {"F": 0.03,   "k": 0.06,   "name": "Solitons (pulsing dots)"},
+    "maze":      {"F": 0.029,  "k": 0.057,  "name": "Maze-like (labyrinthine)"},
+    "spots":     {"F": 0.035,  "k": 0.065,  "name": "Spots (stable dots)"},
+    "worms":     {"F": 0.078,  "k": 0.061,  "name": "Worms (squirming tendrils)"},
+    "waves":     {"F": 0.014,  "k": 0.054,  "name": "Waves (expanding rings)"},
+    "bubbles":   {"F": 0.012,  "k": 0.05,   "name": "Bubbles (negative spots)"},
+}
+
+GS_PRESET_NAMES = list(GS_PRESETS.keys())
+
+# Module-level Gray-Scott state: two 2D float arrays (U, V concentrations)
+_gs_u = None  # numpy array or list-of-lists of floats
+_gs_v = None
+_gs_preset_idx = 0
+_gs_feed = GS_PRESETS["mitosis"]["F"]
+_gs_kill = GS_PRESETS["mitosis"]["k"]
+
+
+def _gs_init(rows, cols, seed_type="center"):
+    """Initialize Gray-Scott U/V concentration grids.
+
+    U starts at 1.0 everywhere, V starts at 0.0 with seeded perturbation regions.
+    """
+    global _gs_u, _gs_v
+    import random
+    if _HAS_NUMPY:
+        _gs_u = np.ones((rows, cols), dtype=np.float64)
+        _gs_v = np.zeros((rows, cols), dtype=np.float64)
+        # Seed: place several small square patches of V=0.5, U=0.5
+        num_seeds = max(3, (rows * cols) // 800)
+        for _ in range(num_seeds):
+            sr = random.randint(2, rows - 6)
+            sc = random.randint(2, cols - 6)
+            sz = random.randint(2, 5)
+            _gs_u[sr:sr+sz, sc:sc+sz] = 0.5
+            _gs_v[sr:sr+sz, sc:sc+sz] = 0.25
+            # Add small random noise to break symmetry
+            _gs_u[sr:sr+sz, sc:sc+sz] += np.random.uniform(-0.01, 0.01, (sz, sz))
+            _gs_v[sr:sr+sz, sc:sc+sz] += np.random.uniform(-0.01, 0.01, (sz, sz))
+    else:
+        _gs_u = [[1.0] * cols for _ in range(rows)]
+        _gs_v = [[0.0] * cols for _ in range(rows)]
+        num_seeds = max(3, (rows * cols) // 800)
+        for _ in range(num_seeds):
+            sr = random.randint(2, rows - 6)
+            sc = random.randint(2, cols - 6)
+            sz = random.randint(2, 5)
+            for dr in range(sz):
+                for dc in range(sz):
+                    _gs_u[sr+dr][sc+dc] = 0.5 + random.uniform(-0.01, 0.01)
+                    _gs_v[sr+dr][sc+dc] = 0.25 + random.uniform(-0.01, 0.01)
+
+
+def _gs_to_grid(rows, cols):
+    """Convert Gray-Scott V concentration to an integer grid for display.
+
+    Maps V concentration [0, max_v] to integer values 0-100 for color mapping.
+    """
+    grid = make_grid(rows, cols)
+    if _gs_v is None:
+        return grid
+    if _HAS_NUMPY:
+        # Quantize V into 0-100 range
+        v = np.array(_gs_v)
+        max_v = max(v.max(), 0.001)
+        quantized = np.clip((v / max_v * 100), 0, 100).astype(int)
+        return quantized.tolist()
+    else:
+        max_v = max(max(row) for row in _gs_v) if _gs_v else 0.001
+        max_v = max(max_v, 0.001)
+        for r in range(rows):
+            for c in range(cols):
+                grid[r][c] = max(0, min(100, int(_gs_v[r][c] / max_v * 100)))
+        return grid
+
+
+def _step_grayscott_numpy():
+    """Gray-Scott step using NumPy vectorized Laplacian."""
+    global _gs_u, _gs_v
+    if _gs_u is None:
+        return
+    u, v = _gs_u, _gs_v
+    # Laplacian via convolution (5-point stencil)
+    laplacian_kernel = np.array([[0, 1, 0],
+                                  [1, -4, 1],
+                                  [0, 1, 0]], dtype=np.float64)
+    lap_u = convolve2d(u, laplacian_kernel, mode="same", boundary="wrap")
+    lap_v = convolve2d(v, laplacian_kernel, mode="same", boundary="wrap")
+    uvv = u * v * v
+    du = GS_DU * lap_u - uvv + _gs_feed * (1.0 - u)
+    dv = GS_DV * lap_v + uvv - (_gs_feed + _gs_kill) * v
+    _gs_u = np.clip(u + du * GS_DT, 0.0, 1.0)
+    _gs_v = np.clip(v + dv * GS_DT, 0.0, 1.0)
+
+
+def _step_grayscott_python():
+    """Gray-Scott step using pure Python — cell by cell."""
+    global _gs_u, _gs_v
+    if _gs_u is None:
+        return
+    rows = len(_gs_u)
+    cols = len(_gs_u[0])
+    new_u = [[0.0] * cols for _ in range(rows)]
+    new_v = [[0.0] * cols for _ in range(rows)]
+    for r in range(rows):
+        for c in range(cols):
+            # 5-point Laplacian with wrapping
+            lap_u = (_gs_u[(r-1) % rows][c] + _gs_u[(r+1) % rows][c]
+                     + _gs_u[r][(c-1) % cols] + _gs_u[r][(c+1) % cols]
+                     - 4.0 * _gs_u[r][c])
+            lap_v = (_gs_v[(r-1) % rows][c] + _gs_v[(r+1) % rows][c]
+                     + _gs_v[r][(c-1) % cols] + _gs_v[r][(c+1) % cols]
+                     - 4.0 * _gs_v[r][c])
+            u = _gs_u[r][c]
+            v = _gs_v[r][c]
+            uvv = u * v * v
+            new_u[r][c] = max(0.0, min(1.0, u + (GS_DU * lap_u - uvv + _gs_feed * (1.0 - u)) * GS_DT))
+            new_v[r][c] = max(0.0, min(1.0, v + (GS_DV * lap_v + uvv - (_gs_feed + _gs_kill) * v) * GS_DT))
+    _gs_u = new_u
+    _gs_v = new_v
 
 
 def parse_rule_string(rule_str):
@@ -954,6 +1094,13 @@ def place_pattern(grid, name, row_off=None, col_off=None):
 def step(grid, rule=None):
     if rule is None:
         rule = RULES["life"]
+    if _is_grayscott(rule):
+        rows, cols = len(grid), len(grid[0])
+        if _HAS_NUMPY:
+            _step_grayscott_numpy()
+        else:
+            _step_grayscott_python()
+        return _gs_to_grid(rows, cols)
     if _is_wireworld(rule):
         if _HAS_NUMPY:
             return _step_wireworld_numpy(grid)
@@ -1469,6 +1616,20 @@ def _wireworld_color(state):
     return 1           # fallback
 
 
+def _grayscott_color(val):
+    """Return curses color pair number for a Gray-Scott concentration value (0-100)."""
+    if val <= 5:
+        return 19       # near-black background (very low V)
+    elif val <= 20:
+        return 6        # blue — low concentration
+    elif val <= 45:
+        return 5        # cyan — medium concentration
+    elif val <= 70:
+        return 1        # green — high concentration
+    else:
+        return 20       # bright white — peak concentration
+
+
 # --- Braille Rendering ---
 
 # Unicode Braille encodes a 2×4 dot matrix per character (U+2800–U+28FF).
@@ -1511,7 +1672,7 @@ def _render_braille_grid(grid, rows, cols, term_rows, term_cols):
     return lines
 
 
-def _braille_dominant_color(grid, rows, cols, tr, tc, ww):
+def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False):
     """Pick the curses color pair for a Braille cell based on majority vote.
 
     Examines the 2×4 block of grid cells that map to terminal position (tr, tc)
@@ -1524,14 +1685,17 @@ def _braille_dominant_color(grid, rows, cols, tr, tc, ww):
             gc = tc * 2 + dx
             if gr < rows and gc < cols:
                 age = grid[gr][gc]
-                if age:
+                if gs:
+                    cp = _grayscott_color(age)
+                    counts[cp] = counts.get(cp, 0) + 1
+                elif age:
                     if ww:
                         cp = _wireworld_color(age)
                     else:
                         cp = _age_color(age)
                     counts[cp] = counts.get(cp, 0) + 1
     if not counts:
-        return 1  # default green for empty
+        return 19 if gs else 1
     return max(counts, key=counts.get)
 
 
@@ -1562,6 +1726,20 @@ def _age_to_gif_index(age):
         return 3
     else:
         return 4
+
+
+def _gs_to_gif_index(val):
+    """Map Gray-Scott concentration value (0-100) to GIF palette index."""
+    if val <= 5:
+        return 0       # black
+    elif val <= 25:
+        return 3       # blue
+    elif val <= 50:
+        return 2       # cyan
+    elif val <= 75:
+        return 1       # green
+    else:
+        return 4       # magenta (high)
 
 
 def _wireworld_to_gif_index(state):
@@ -1655,7 +1833,7 @@ def _gif_sub_blocks(data):
     return bytes(result)
 
 
-def export_gif(history_frames, rows, cols, filepath, cell_size=4, delay_cs=10, wireworld=False):
+def export_gif(history_frames, rows, cols, filepath, cell_size=4, delay_cs=10, wireworld=False, grayscott=False):
     """Export a list of grid snapshots as an animated GIF.
 
     Args:
@@ -1712,7 +1890,12 @@ def export_gif(history_frames, rows, cols, filepath, cell_size=4, delay_cs=10, w
         for r in range(rows):
             row_pixels = []
             for c in range(cols):
-                idx = _wireworld_to_gif_index(frame_grid[r][c]) if wireworld else _age_to_gif_index(frame_grid[r][c])
+                if wireworld:
+                    idx = _wireworld_to_gif_index(frame_grid[r][c])
+                elif grayscott:
+                    idx = _gs_to_gif_index(frame_grid[r][c])
+                else:
+                    idx = _age_to_gif_index(frame_grid[r][c])
                 row_pixels.extend([idx] * cell_size)
             for _ in range(cell_size):
                 pixels.extend(row_pixels)
@@ -1812,6 +1995,30 @@ def _png_ww_to_index(state):
     return 0
 
 
+def _gs_value_to_rgb(val):
+    """Map Gray-Scott quantized value (0-100) to an RGB color tuple.
+
+    Uses a smooth gradient: black -> blue -> cyan -> green -> yellow -> white.
+    """
+    if val <= 0:
+        return (0, 0, 0)
+    elif val <= 20:
+        t = val / 20.0
+        return (0, 0, int(180 * t))
+    elif val <= 40:
+        t = (val - 20) / 20.0
+        return (0, int(200 * t), 180 + int(20 * t))
+    elif val <= 60:
+        t = (val - 40) / 20.0
+        return (0, 200 + int(55 * t), int(200 * (1 - t)))
+    elif val <= 80:
+        t = (val - 60) / 20.0
+        return (int(255 * t), 255, 0)
+    else:
+        t = (val - 80) / 20.0
+        return (255, 255, int(255 * t))
+
+
 def _blend_rgb(c1, c2, t):
     """Linearly blend two RGB tuples by factor t (0.0=c1, 1.0=c2)."""
     return (
@@ -1828,11 +2035,12 @@ def _png_chunk(chunk_type, data):
 
 
 def render_png(grid, rows, cols, filepath, cell_size=8, palette_name="classic",
-               grid_lines=False, grid_line_color=None, wireworld=False, aa=True):
+               grid_lines=False, grid_line_color=None, wireworld=False, aa=True,
+               grayscott=False):
     """Render a single grid frame as a high-resolution PNG image.
 
     Args:
-        grid: 2D grid (grid[r][c] = age int or WW state)
+        grid: 2D grid (grid[r][c] = age int or WW state or GS val 0-100)
         rows, cols: grid dimensions
         filepath: output .png path
         cell_size: pixel size of each cell (default 8)
@@ -1851,13 +2059,20 @@ def render_png(grid, rows, cols, filepath, cell_size=8, palette_name="classic",
     height = rows * cell_size + (rows + 1) * line_w if grid_lines else rows * cell_size
 
     # Build color index map for the grid
-    color_map = [[0] * cols for _ in range(rows)]
-    for r in range(rows):
-        for c in range(cols):
-            if wireworld:
-                color_map[r][c] = _png_ww_to_index(grid[r][c])
-            else:
-                color_map[r][c] = _png_age_to_index(grid[r][c])
+    # For Gray-Scott, color_map stores direct RGB tuples instead of indices
+    if grayscott:
+        color_map = [[(0, 0, 0)] * cols for _ in range(rows)]
+        for r in range(rows):
+            for c in range(cols):
+                color_map[r][c] = _gs_value_to_rgb(grid[r][c])
+    else:
+        color_map = [[0] * cols for _ in range(rows)]
+        for r in range(rows):
+            for c in range(cols):
+                if wireworld:
+                    color_map[r][c] = _png_ww_to_index(grid[r][c])
+                else:
+                    color_map[r][c] = _png_age_to_index(grid[r][c])
 
     # Build raw pixel rows (each row: filter byte + RGB triples)
     raw_data = bytearray()
@@ -1888,8 +2103,11 @@ def render_png(grid, rows, cols, filepath, cell_size=8, palette_name="classic",
                     raw_data.extend(palette[0])
                     continue
 
-            base_idx = color_map[cell_r][cell_c]
-            base_color = palette[base_idx]
+            cm = color_map[cell_r][cell_c]
+            if grayscott:
+                base_color = cm  # already RGB tuple
+            else:
+                base_color = palette[cm]
 
             # Anti-aliasing: blend edge pixels with neighbouring cell colors
             if aa_radius and cell_size >= 4:
@@ -1915,7 +2133,8 @@ def render_png(grid, rows, cols, filepath, cell_size=8, palette_name="classic",
                     base_w = 1.0
                     br, bg, bb = float(base_color[0]), float(base_color[1]), float(base_color[2])
                     for nr, nc, w in edges:
-                        n_color = palette[color_map[nr][nc]]
+                        ncm = color_map[nr][nc]
+                        n_color = ncm if grayscott else palette[ncm]
                         if n_color != base_color:
                             br += n_color[0] * w
                             bg += n_color[1] * w
@@ -1979,6 +2198,7 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
     os.makedirs(output_dir, exist_ok=True)
 
     ww = wireworld or _is_wireworld(rule)
+    gs = _is_grayscott(rule)
 
     # Initialize grid
     grid = make_grid(rows, cols)
@@ -1993,6 +2213,9 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
         grid, loaded_ww = _load_pattern_file(path, rows, cols)
         if loaded_ww:
             ww = True
+    elif gs:
+        _gs_init(rows, cols)
+        grid = _gs_to_grid(rows, cols)
     elif ww and not load_path:
         place_wireworld_pattern(grid, "ww_clock")
     else:
@@ -2010,7 +2233,7 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
         render_png(grid, rows, cols, fpath,
                    cell_size=cell_size, palette_name=palette_name,
                    grid_lines=grid_lines, grid_line_color=grid_line_color,
-                   wireworld=ww, aa=aa)
+                   wireworld=ww, aa=aa, grayscott=gs)
 
         if gen % 10 == 0 or gen == generations - 1:
             print(f"  [{gen + 1}/{generations}] {fname}")
@@ -2745,6 +2968,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
     curses.init_pair(16, curses.COLOR_BLACK, curses.COLOR_BLUE)  # cursor on head
     curses.init_pair(17, curses.COLOR_BLACK, curses.COLOR_RED)   # cursor on tail
     curses.init_pair(18, curses.COLOR_BLACK, curses.COLOR_YELLOW)  # cursor on conductor
+    curses.init_pair(19, curses.COLOR_BLUE, -1)                    # Gray-Scott: very low V
+    curses.init_pair(20, curses.COLOR_WHITE, -1)                   # Gray-Scott: peak V
 
     # Multiplayer state
     mp = network is not None
@@ -2786,7 +3011,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
     sound = SoundEngine()
 
     # Topology mode
-    global _topology
+    global _topology, _gs_preset_idx, _gs_feed, _gs_kill
     topo_idx = 0  # index into TOPOLOGIES
     _topology = TOPOLOGIES[topo_idx]
 
@@ -2803,6 +3028,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
 
     while True:
         ww = _is_wireworld(rule)
+        gs = _is_grayscott(rule)
 
         # Track population
         pop = _count_population(grid)
@@ -2871,7 +3097,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     ch = braille_lines[tr][tc]
                     if ch == chr(_BRAILLE_BASE):
                         continue  # empty — skip for speed
-                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww)
+                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs)
                     try:
                         stdscr.addstr(tr, tc, ch, curses.color_pair(cp))
                     except curses.error:
@@ -2902,6 +3128,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                         attr = curses.color_pair(8)
                     elif detected_cells and (r, c) in detected_cells:
                         attr = curses.color_pair(12)
+                    elif gs:
+                        attr = curses.color_pair(_grayscott_color(age))
+                        cell_str = "\u2588\u2588" if age > 3 else "  "
                     elif ww:
                         attr = curses.color_pair(_wireworld_color(age)) if age else curses.color_pair(1)
                     else:
@@ -2976,7 +3205,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 hashlife_str = f" | HASHLIFE 2^{hl_exp} ({hl_gens} gens/step) [<>]speed"
             else:
                 hashlife_str = ""
-            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{topo_str}{hashlife_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [T]opo [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
+            gs_str = f" | F={_gs_feed:.4f} k={_gs_kill:.4f} [<>]preset" if gs else ""
+            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{topo_str}{hashlife_str}{gs_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [T]opo [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
@@ -3355,6 +3585,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                         pop_history = []
             elif key == ord("R"):
                 was_ww = ww
+                was_gs = gs
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -3362,18 +3593,30 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     rule_idx = 0
                     rule = RULES[RULE_NAMES[0]]
                 new_ww = _is_wireworld(rule)
-                if was_ww != new_ww:
-                    # Clear grid when switching between wireworld and binary modes
+                new_gs = _is_grayscott(rule)
+                if new_ww:
+                    hashlife_active = False
+                if new_gs:
+                    hashlife_active = False
+                # Mode transition: clear grid and re-initialize
+                if was_ww != new_ww or was_gs != new_gs:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
                     if new_ww:
                         place_wireworld_pattern(grid, "ww_clock")
+                    elif new_gs:
+                        _gs_init(rows, cols)
+                        grid = _gs_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
                     browsing_history = False
                     pop_history = []
+                if hashlife_active:
+                    # Re-sync HashLife with new rule
+                    hashlife.from_grid(grid, rule)
+                    hashlife.generation = generation
                 if mp:
                     network.send_rule_change(rule, rule_idx)
             elif key == ord("g"):
@@ -3453,10 +3696,14 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
             elif key == ord("-") or key == ord("_"):
                 delay = min(2.0, delay + 0.05)
             elif key == ord("r"):
-                import random
-                for r2 in range(rows):
-                    for c2 in range(cols):
-                        grid[r2][c2] = random.randint(0, 1)
+                if gs:
+                    _gs_init(rows, cols)
+                    grid = _gs_to_grid(rows, cols)
+                else:
+                    import random
+                    for r2 in range(rows):
+                        for c2 in range(cols):
+                            grid[r2][c2] = random.randint(0, 1)
                 generation = 0
                 history = [copy.deepcopy(grid)]
                 hist_idx = 0
@@ -3467,6 +3714,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     network.send_grid_sync(grid, generation, rule)
             elif key == ord("R"):
                 was_ww = ww
+                was_gs = gs
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -3474,14 +3722,20 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     rule_idx = 0
                     rule = RULES[RULE_NAMES[0]]
                 new_ww = _is_wireworld(rule)
+                new_gs = _is_grayscott(rule)
                 if new_ww:
                     hashlife_active = False
-                if was_ww != new_ww:
+                if new_gs:
+                    hashlife_active = False
+                if was_ww != new_ww or was_gs != new_gs:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
                     if new_ww:
                         place_wireworld_pattern(grid, "ww_clock")
+                    elif new_gs:
+                        _gs_init(rows, cols)
+                        grid = _gs_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -3577,7 +3831,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     hashlife_active = False
             elif key == ord("H"):
                 # Toggle HashLife hyperspeed mode (only for Life-like B/S rules)
-                if not ww and not se.custom_rule_fn:
+                if not ww and not gs and not se.custom_rule_fn:
                     if not hashlife_active:
                         # Activate: import grid into quadtree
                         hashlife = HashLifeEngine()
@@ -3612,6 +3866,34 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                         hashlife.set_step_exponent(exp + 1)
                     else:
                         hashlife.set_step_exponent(None)  # Max speed
+            elif key == ord("<") and gs:
+                # Previous Gray-Scott preset
+                _gs_preset_idx = (_gs_preset_idx - 1) % len(GS_PRESET_NAMES)
+                preset = GS_PRESETS[GS_PRESET_NAMES[_gs_preset_idx]]
+                _gs_feed = preset["F"]
+                _gs_kill = preset["k"]
+                rule["name"] = f"Gray-Scott ({preset['name']})"
+                _gs_init(rows, cols)
+                grid = _gs_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord(">") and gs:
+                # Next Gray-Scott preset
+                _gs_preset_idx = (_gs_preset_idx + 1) % len(GS_PRESET_NAMES)
+                preset = GS_PRESETS[GS_PRESET_NAMES[_gs_preset_idx]]
+                _gs_feed = preset["F"]
+                _gs_kill = preset["k"]
+                rule["name"] = f"Gray-Scott ({preset['name']})"
+                _gs_init(rows, cols)
+                grid = _gs_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
             elif key == ord("G"):
                 # Export history as animated GIF
                 if len(history) > 1:
@@ -3629,7 +3911,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     try:
                         export_gif(history, rows, cols, gif_path,
                                    cell_size=4, delay_cs=max(1, int(delay * 100)),
-                                   wireworld=ww)
+                                   wireworld=ww, grayscott=gs)
                         export_msg = f" Saved {gif_path}"
                     except (OSError, IOError) as exc:
                         export_msg = f" GIF export failed: {exc}"
@@ -4366,6 +4648,13 @@ def main():
         help="Run a Lua-like Python script on startup (path or name from ~/.life-scripts/)",
     )
     parser.add_argument(
+        "--gs-preset",
+        choices=list(GS_PRESETS.keys()),
+        default="mitosis",
+        help="Gray-Scott preset when --rule grayscott (default: mitosis). "
+             "Options: " + ", ".join(GS_PRESETS.keys()),
+    )
+    parser.add_argument(
         "--discover",
         action="store_true",
         default=False,
@@ -4532,6 +4821,17 @@ def main():
     elif args.rule.lower() == "wireworld":
         # Wireworld mode with default pattern: place a clock
         place_wireworld_pattern(grid, "ww_clock")
+    elif args.rule.lower() == "grayscott":
+        # Gray-Scott reaction-diffusion: initialize U/V concentrations
+        gs_preset_name = args.gs_preset
+        if gs_preset_name in GS_PRESETS:
+            _gs_preset_idx = GS_PRESET_NAMES.index(gs_preset_name)
+            preset = GS_PRESETS[gs_preset_name]
+            _gs_feed = preset["F"]
+            _gs_kill = preset["k"]
+            rule["name"] = f"Gray-Scott ({preset['name']})"
+        _gs_init(args.rows, args.cols)
+        grid = _gs_to_grid(args.rows, args.cols)
     else:
         place_pattern(grid, args.pattern)
 

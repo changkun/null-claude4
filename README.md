@@ -1,6 +1,6 @@
 # Cellular Automaton — Terminal Simulator
 
-A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, and supports arbitrary rules via B/S notation.
+A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, and supports arbitrary rules via B/S notation.
 
 ## Usage
 
@@ -16,6 +16,8 @@ python3 life.py --rule highlife --pattern random    # HighLife ruleset
 python3 life.py --rule daynight                    # Day & Night ruleset
 python3 life.py --rule B2/S                        # custom rule via B/S notation
 python3 life.py --rule wireworld                   # Wireworld 4-state automaton
+python3 life.py --rule grayscott                   # Gray-Scott reaction-diffusion
+python3 life.py --rule grayscott --gs-preset coral  # Gray-Scott with coral preset
 python3 life.py --script probabilistic_life        # run a user script on startup
 python3 life.py --script ~/my_script.py            # run a script from a file path
 python3 life.py --discover                         # evolve interesting rulesets via GA
@@ -33,7 +35,8 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--speed`   | 0.1       | Delay between generations (seconds)  |
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
 | `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
-| `--rule`    | `life`    | Rule preset, `wireworld`, or B/S notation (e.g. `B36/S23`) |
+| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, or B/S notation (e.g. `B36/S23`) |
+| `--gs-preset` | `mitosis` | Gray-Scott parameter preset (`mitosis`, `coral`, `solitons`, `maze`, `spots`, `worms`, `waves`, `bubbles`) |
 | `--script`  | —         | Run a Python script on startup (path or name from `~/.life-scripts/`) |
 | `--discover` | off      | Launch genetic algorithm rule discovery mode |
 | `--ga-generations` | 50 | Number of GA generations in discovery mode |
@@ -62,7 +65,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `B`       | Toggle Braille high-density rendering |
 | `T`       | Cycle topology (Torus → Klein Bottle → Möbius Strip → Bounded) |
 | `H`       | Toggle HashLife hyperspeed mode   |
-| `<` / `>` | Decrease / increase HashLife step exponent |
+| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode |
 | `G`       | Export history as animated GIF    |
 | `L`       | Load and run a script             |
 | `[`       | Rewind one generation (auto-pauses) |
@@ -141,6 +144,7 @@ All rules use Birth/Survival notation — a cell is born if it has exactly B nei
 | `2x2`      | B36/S125   | Forms 2x2 blocks |
 | `maze`     | B3/S12345  | Generates maze-like corridors |
 | `wireworld`| *(4-state)* | Logic circuits — see [Wireworld](#wireworld) below |
+| `grayscott`| *(continuous)* | Reaction-diffusion — see [Gray-Scott](#gray-scott-reaction-diffusion) below |
 
 Use `--rule <preset>` or `--rule B.../S...` for custom rules. Press `R` at runtime to cycle through presets.
 
@@ -187,6 +191,55 @@ Wireworld patterns are fully supported in both RLE and `.cells` formats. RLE use
 ### GIF Export
 
 GIF export uses a Wireworld-specific palette (blue/red/yellow) when in Wireworld mode.
+
+## Gray-Scott Reaction-Diffusion
+
+Gray-Scott is a continuous-valued reaction-diffusion model that produces organic patterns — spots, stripes, coral growths, mitosis-like cell splitting, and labyrinthine mazes. Unlike the binary alive/dead rulesets, Gray-Scott tracks two chemical concentrations (U and V) across the grid and renders them as smooth color gradients.
+
+The governing equations:
+
+```
+du/dt = Du·∇²u − u·v² + F·(1−u)
+dv/dt = Dv·∇²v + u·v² − (F+k)·v
+```
+
+where F (feed rate) and k (kill rate) control the pattern type, and Du/Dv are diffusion rates.
+
+### Starting Gray-Scott
+
+```bash
+python3 life.py --rule grayscott                    # default mitosis preset
+python3 life.py --rule grayscott --gs-preset coral   # branching coral growth
+python3 life.py --rule grayscott --gs-preset maze    # labyrinthine patterns
+```
+
+### Parameter Presets
+
+Press `<` / `>` at runtime to cycle through presets. Each produces qualitatively different emergent behavior:
+
+| Preset     | F       | k       | Visual character                   |
+|------------|---------|---------|-------------------------------------|
+| `mitosis`  | 0.0367  | 0.0649  | Cell-like blobs that split and divide |
+| `coral`    | 0.0545  | 0.062   | Branching growth resembling coral reefs |
+| `solitons` | 0.03    | 0.06    | Pulsing, isolated dots              |
+| `maze`     | 0.029   | 0.057   | Labyrinthine corridors              |
+| `spots`    | 0.035   | 0.065   | Stable circular dots                |
+| `worms`    | 0.078   | 0.061   | Squirming tendril-like structures   |
+| `waves`    | 0.014   | 0.054   | Expanding concentric rings          |
+| `bubbles`  | 0.012   | 0.05    | Negative spots (holes in substrate) |
+
+### Rendering
+
+- **Terminal** — V concentration is mapped to a 5-stop color gradient: black (no V) → blue → cyan → green → white (peak V). Cells above a threshold render as filled blocks.
+- **PNG** — smooth 6-stop RGB gradient: black → blue → cyan → green → yellow → white, producing publication-quality continuous-tone output.
+- **GIF** — quantized to the 5-color GIF palette.
+- **Braille** — supported; color is chosen by majority vote of the 2×4 block.
+
+### Interactions
+
+- **HashLife** — incompatible (continuous values cannot use the quadtree memoization). Pressing `H` in Gray-Scott mode is blocked; switching to Gray-Scott via `R` auto-deactivates HashLife.
+- **Randomize** (`r`) — re-seeds the U/V concentration grids with new random patches instead of binary randomization.
+- **Status bar** — displays current `F=` and `k=` values with a `[<>]preset` hint.
 
 ## Population Statistics Dashboard
 
