@@ -48,6 +48,7 @@ RULES = {
     "dla": {"b": set(), "s": set(), "name": "DLA (snowflake)", "dla": True},
     "forestfire": {"b": set(), "s": set(), "name": "Forest Fire (classic)", "forestfire": True},
     "ising": {"b": set(), "s": set(), "name": "Ising Model (critical)", "ising": True},
+    "cca": {"b": set(), "s": set(), "name": "Cyclic CA (14-state)", "cca": True},
 }
 
 RULE_NAMES = list(RULES.keys())
@@ -178,6 +179,11 @@ def _is_forestfire(rule):
 def _is_ising(rule):
     """Check if the current rule is the Ising Model spin simulation."""
     return rule.get("ising", False)
+
+
+def _is_cca(rule):
+    """Check if the current rule is the Cyclic Cellular Automaton."""
+    return rule.get("cca", False)
 
 
 # --- Wa-Tor Predator-Prey Ecosystem ---
@@ -2276,6 +2282,170 @@ def _ising_color(val):
     return 6        # spin −1 → blue (pair 6)
 
 
+# --- Cyclic Cellular Automaton (CCA) ---
+# Each cell holds one of N states (0..N-1).  A cell advances to state (s+1)%N
+# if at least *threshold* of its neighbors already hold that successor state.
+# From random initial conditions, this produces spontaneous spiral waves and
+# competition fronts — one of the most visually striking cellular automata.
+
+CCA_PRESETS = {
+    "classic": {
+        "name": "Classic",
+        "description": "14 states, threshold 1, Moore neighborhood — fast spirals",
+        "n_states": 14,
+        "threshold": 1,
+        "neighborhood": "moore",
+    },
+    "sparse": {
+        "name": "Sparse",
+        "description": "14 states, threshold 3 — slower nucleation, wider spirals",
+        "n_states": 14,
+        "threshold": 3,
+        "neighborhood": "moore",
+    },
+    "von-neumann": {
+        "name": "Von Neumann",
+        "description": "14 states, threshold 1, Von Neumann neighborhood — diamond spirals",
+        "n_states": 14,
+        "threshold": 1,
+        "neighborhood": "von_neumann",
+    },
+    "rainbow": {
+        "name": "Rainbow",
+        "description": "20 states, threshold 1 — more colors, longer cycle fronts",
+        "n_states": 20,
+        "threshold": 1,
+        "neighborhood": "moore",
+    },
+    "turbulent": {
+        "name": "Turbulent",
+        "description": "5 states, threshold 1 — fast chaotic cycling",
+        "n_states": 5,
+        "threshold": 1,
+        "neighborhood": "moore",
+    },
+}
+CCA_PRESET_NAMES = list(CCA_PRESETS.keys())
+
+_cca_grid = None
+_cca_rows, _cca_cols = 0, 0
+_cca_preset_idx = 0
+_cca_n_states = 14
+_cca_threshold = 1
+_cca_neighborhood = "moore"
+
+
+def _cca_init(rows, cols, preset_name=None):
+    """Initialize the Cyclic Cellular Automaton grid."""
+    global _cca_grid, _cca_rows, _cca_cols, _cca_n_states, _cca_threshold, _cca_neighborhood
+    import random as _rng
+    _cca_rows, _cca_cols = rows, cols
+    if preset_name is None:
+        preset_name = CCA_PRESET_NAMES[_cca_preset_idx]
+    preset = CCA_PRESETS[preset_name]
+    _cca_n_states = preset["n_states"]
+    _cca_threshold = preset["threshold"]
+    _cca_neighborhood = preset.get("neighborhood", "moore")
+
+    if _HAS_NUMPY:
+        _cca_grid = np.random.randint(0, _cca_n_states, size=(rows, cols), dtype=np.int16)
+    else:
+        _cca_grid = []
+        for r in range(rows):
+            row = []
+            for c in range(cols):
+                row.append(_rng.randint(0, _cca_n_states - 1))
+            _cca_grid.append(row)
+
+
+def _cca_step():
+    """Advance the CCA by one generation."""
+    global _cca_grid
+    rows, cols = _cca_rows, _cca_cols
+    if rows < 1 or cols < 1:
+        return
+    if _HAS_NUMPY:
+        _cca_step_numpy()
+    else:
+        _cca_step_python()
+
+
+def _cca_step_numpy():
+    """Vectorized CCA step using NumPy."""
+    global _cca_grid
+    rows, cols = _cca_rows, _cca_cols
+    g = _cca_grid
+    successor = (g + 1) % _cca_n_states
+
+    # Count how many neighbors have the successor state
+    succ_match = np.zeros((rows, cols), dtype=np.int16)
+    if _cca_neighborhood == "moore":
+        offsets = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    else:
+        offsets = [(-1, 0), (0, -1), (0, 1), (1, 0)]
+    for dr, dc in offsets:
+        neighbor = np.roll(np.roll(g, -dr, axis=0), -dc, axis=1)
+        succ_match += (neighbor == successor).astype(np.int16)
+
+    # Advance cells that meet the threshold
+    advance = succ_match >= _cca_threshold
+    _cca_grid = np.where(advance, successor, g)
+
+
+def _cca_step_python():
+    """Pure-Python CCA step."""
+    rows, cols = _cca_rows, _cca_cols
+    g = _cca_grid
+    new_grid = [row[:] for row in g]
+
+    if _cca_neighborhood == "moore":
+        offsets = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    else:
+        offsets = [(-1, 0), (0, -1), (0, 1), (1, 0)]
+
+    for r in range(rows):
+        for c in range(cols):
+            s = g[r][c]
+            succ = (s + 1) % _cca_n_states
+            count = 0
+            for dr, dc in offsets:
+                nr = (r + dr) % rows
+                nc = (c + dc) % cols
+                if g[nr][nc] == succ:
+                    count += 1
+            if count >= _cca_threshold:
+                new_grid[r][c] = succ
+
+    _cca_grid[:] = new_grid
+
+
+def _cca_to_grid(rows, cols):
+    """Convert CCA state to display grid (0-100 scale)."""
+    grid = [[0] * cols for _ in range(rows)]
+    for r in range(min(rows, _cca_rows)):
+        for c in range(min(cols, _cca_cols)):
+            if _HAS_NUMPY:
+                s = int(_cca_grid[r, c])
+            else:
+                s = _cca_grid[r][c]
+            # Map state 0..N-1 to 1..100 (avoid 0 so cells always render)
+            grid[r][c] = max(1, int(s * 100 / _cca_n_states) + 1)
+    return grid
+
+
+def _cca_color(val):
+    """Map CCA grid value to a curses color pair for vivid spiral display."""
+    # Distribute across available color pairs for a rainbow effect
+    if val <= 0:
+        return 1
+    # Map val (1-100) to a set of distinct color pairs
+    # Use pairs: 6(cyan), 3(green), 15(yellow), 21(red), 5(magenta), 4(blue), 14(bright green), 13(bright cyan)
+    palette = [6, 3, 15, 21, 5, 4, 14, 13, 12, 11, 10, 9, 8, 7]
+    idx = (val - 1) * len(palette) // 100
+    idx = min(idx, len(palette) - 1)
+    return palette[idx]
+
+
 # --- Lenia: Continuous Smooth-Kernel Cellular Automata ---
 # Generalizes Conway's Life into continuous space and time using smooth
 # ring-shaped kernels and a Gaussian growth function.
@@ -3374,6 +3544,10 @@ def place_pattern(grid, name, row_off=None, col_off=None):
 def step(grid, rule=None):
     if rule is None:
         rule = RULES["life"]
+    if _is_cca(rule):
+        rows, cols = len(grid), len(grid[0])
+        _cca_step()
+        return _cca_to_grid(rows, cols)
     if _is_ising(rule):
         rows, cols = len(grid), len(grid[0])
         _ising_step()
@@ -4547,6 +4721,7 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
     ph = _is_physarum(rule)
     ff = _is_forestfire(rule)
     ig = _is_ising(rule)
+    cc = _is_cca(rule)
 
     # Initialize grid
     grid = make_grid(rows, cols)
@@ -4564,6 +4739,9 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
     elif ff:
         _ff_init(rows, cols)
         grid = _ff_to_grid(rows, cols)
+    elif cc:
+        _cca_init(rows, cols)
+        grid = _cca_to_grid(rows, cols)
     elif ph:
         _phys_init(rows, cols)
         grid = _phys_to_grid(rows, cols)
@@ -5401,6 +5579,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         dla = _is_dla(rule)
         forestfire = _is_forestfire(rule)
         ising = _is_ising(rule)
+        cca = _is_cca(rule)
 
         # Track population
         pop = _count_population(grid)
@@ -5505,6 +5684,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                         cell_str = "\u2588\u2588" if age else "  "
                     elif ising:
                         attr = curses.color_pair(_ising_color(age))
+                        cell_str = "\u2588\u2588"
+                    elif cca:
+                        attr = curses.color_pair(_cca_color(age))
                         cell_str = "\u2588\u2588"
                     elif dla:
                         attr = curses.color_pair(_dla_color(age))
@@ -5997,6 +6179,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_sp = sandpile
                 was_ff = forestfire
                 was_ising = ising
+                was_cca = cca
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -6014,10 +6197,11 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_sp = _is_sandpile(rule)
                 new_ff = _is_forestfire(rule)
                 new_ising = _is_ising(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising:
+                new_cca = _is_cca(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca:
                     hashlife_active = False
                 # Mode transition: clear grid and re-initialize
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -6157,6 +6341,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 elif ising:
                     _ising_init(rows, cols)
                     grid = _ising_to_grid(rows, cols)
+                elif cca:
+                    _cca_init(rows, cols)
+                    grid = _cca_to_grid(rows, cols)
                 else:
                     import random
                     for r2 in range(rows):
@@ -6181,6 +6368,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_phys = physarum
                 was_sp = sandpile
                 was_ff = forestfire
+                was_ising = ising
+                was_cca = cca
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -6197,9 +6386,11 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_phys = _is_physarum(rule)
                 new_sp = _is_sandpile(rule)
                 new_ff = _is_forestfire(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff:
+                new_ising = _is_ising(rule)
+                new_cca = _is_cca(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca:
                     hashlife_active = False
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -6236,6 +6427,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_ising:
                         _ising_init(rows, cols)
                         grid = _ising_to_grid(rows, cols)
+                    elif new_cca:
+                        _cca_init(rows, cols)
+                        grid = _cca_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -6618,6 +6812,30 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 hist_idx = 0
                 browsing_history = False
                 pop_history = []
+            elif key == ord("<") and cca:
+                # Previous CCA preset
+                _cca_preset_idx = (_cca_preset_idx - 1) % len(CCA_PRESET_NAMES)
+                preset_name = CCA_PRESET_NAMES[_cca_preset_idx]
+                rule["name"] = f"Cyclic CA ({CCA_PRESETS[preset_name]['name']})"
+                _cca_init(rows, cols, preset_name)
+                grid = _cca_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord(">") and cca:
+                # Next CCA preset
+                _cca_preset_idx = (_cca_preset_idx + 1) % len(CCA_PRESET_NAMES)
+                preset_name = CCA_PRESET_NAMES[_cca_preset_idx]
+                rule["name"] = f"Cyclic CA ({CCA_PRESETS[preset_name]['name']})"
+                _cca_init(rows, cols, preset_name)
+                grid = _cca_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
             elif key == ord("<") and sandpile:
                 # Previous Sandpile preset
                 _sp_preset_idx = (_sp_preset_idx - 1) % len(SANDPILE_PRESET_NAMES)
@@ -6951,6 +7169,16 @@ def _save_module_state(rule):
             "_ising_preset_idx": _ising_preset_idx,
             "_ising_temperature": _ising_temperature,
         })
+    elif _is_cca(rule):
+        state.update({
+            "_cca_grid": copy.deepcopy(_cca_grid),
+            "_cca_rows": _cca_rows,
+            "_cca_cols": _cca_cols,
+            "_cca_preset_idx": _cca_preset_idx,
+            "_cca_n_states": _cca_n_states,
+            "_cca_threshold": _cca_threshold,
+            "_cca_neighborhood": _cca_neighborhood,
+        })
     return state
 
 
@@ -7060,6 +7288,15 @@ def _restore_module_state(rule, state):
         _ising_cols = state["_ising_cols"]
         _ising_preset_idx = state["_ising_preset_idx"]
         _ising_temperature = state["_ising_temperature"]
+    elif _is_cca(rule):
+        global _cca_grid, _cca_rows, _cca_cols, _cca_preset_idx, _cca_n_states, _cca_threshold, _cca_neighborhood
+        _cca_grid = state["_cca_grid"]
+        _cca_rows = state["_cca_rows"]
+        _cca_cols = state["_cca_cols"]
+        _cca_preset_idx = state["_cca_preset_idx"]
+        _cca_n_states = state["_cca_n_states"]
+        _cca_threshold = state["_cca_threshold"]
+        _cca_neighborhood = state["_cca_neighborhood"]
 
 
 def _cell_color_pair(age, rule):
@@ -7068,6 +7305,8 @@ def _cell_color_pair(age, rule):
         return _ff_color(age)
     if _is_ising(rule):
         return _ising_color(age)
+    if _is_cca(rule):
+        return _cca_color(age)
     if _is_dla(rule):
         return _dla_color(age)
     if _is_sandpile(rule):
@@ -7088,6 +7327,8 @@ def _cell_color_pair(age, rule):
 def _cell_str(age, rule):
     """Return the two-char display string for a cell value under *rule*."""
     if _is_ising(rule):
+        return "\u2588\u2588"
+    if _is_cca(rule):
         return "\u2588\u2588"
     if _is_grayscott(rule) or _is_lenia(rule) or _is_physarum(rule):
         return "\u2588\u2588" if age > 3 else "  "
@@ -7332,6 +7573,9 @@ def run_split(stdscr, grid_l, grid_r, speed, rule_l, rule_r,
             elif _is_ising(r_rule):
                 _ising_init(g_rows, g_cols)
                 grids[p] = _ising_to_grid(g_rows, g_cols)
+            elif _is_cca(r_rule):
+                _cca_init(g_rows, g_cols)
+                grids[p] = _cca_to_grid(g_rows, g_cols)
             elif _is_lenia(r_rule):
                 preset = LENIA_PRESETS[LENIA_PRESET_NAMES[_lenia_preset_idx]]
                 _lenia_init(g_rows, g_cols, preset.get("seed", "orbium"))
@@ -7420,6 +7664,9 @@ def run_split(stdscr, grid_l, grid_r, speed, rule_l, rule_r,
             elif _is_ising(new_rule):
                 _ising_init(g_rows, g_cols)
                 grids[p] = _ising_to_grid(g_rows, g_cols)
+            elif _is_cca(new_rule):
+                _cca_init(g_rows, g_cols)
+                grids[p] = _cca_to_grid(g_rows, g_cols)
             else:
                 place_pattern(grids[p], "random")
             mod_states[p] = _save_module_state(new_rule)
@@ -8118,6 +8365,13 @@ def main():
              "Options: " + ", ".join(ISING_PRESETS.keys()),
     )
     parser.add_argument(
+        "--cca-preset",
+        choices=list(CCA_PRESETS.keys()),
+        default="classic",
+        help="Cyclic CA preset when --rule cca (default: classic). "
+             "Options: " + ", ".join(CCA_PRESETS.keys()),
+    )
+    parser.add_argument(
         "--discover",
         action="store_true",
         default=False,
@@ -8302,6 +8556,9 @@ def main():
             elif _is_ising(rule):
                 _ising_init(r, c)
                 g = _ising_to_grid(r, c)
+            elif _is_cca(rule):
+                _cca_init(r, c)
+                g = _cca_to_grid(r, c)
             else:
                 place_pattern(g, args.pattern)
             return g
@@ -8458,6 +8715,15 @@ def main():
             rule["name"] = f"Ising Model ({preset['name']})"
         _ising_init(args.rows, args.cols, ising_preset_name)
         grid = _ising_to_grid(args.rows, args.cols)
+    elif args.rule.lower() == "cca":
+        # Cyclic Cellular Automaton
+        cca_preset_name = args.cca_preset
+        if cca_preset_name in CCA_PRESETS:
+            _cca_preset_idx = CCA_PRESET_NAMES.index(cca_preset_name)
+            preset = CCA_PRESETS[cca_preset_name]
+            rule["name"] = f"Cyclic CA ({preset['name']})"
+        _cca_init(args.rows, args.cols, cca_preset_name)
+        grid = _cca_to_grid(args.rows, args.cols)
     elif args.rule.lower() == "sandpile":
         # Abelian Sandpile self-organized criticality
         sp_preset_name = args.sandpile_preset
