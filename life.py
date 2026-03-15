@@ -5,6 +5,7 @@ import argparse
 import copy
 import curses
 import os
+import re
 import time
 
 # --- Rulesets (Birth/Survival notation) ---
@@ -142,6 +143,199 @@ def load_cells(filepath, rows, cols):
     return grid
 
 
+def parse_rle(text):
+    """Parse RLE-encoded pattern text into (rows_2d, name, rule_string).
+
+    Returns a list of rows (each a list of 0/1), the pattern name (or ""),
+    and the rule string from the header (or "").
+    """
+    lines = text.splitlines()
+    name = ""
+    rule_str = ""
+    header_found = False
+    width = height = 0
+    pattern_data = ""
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            # Metadata comments
+            if stripped.startswith("#N"):
+                name = stripped[2:].strip()
+            continue
+        if not header_found and stripped.startswith("x"):
+            # Header line: x = W, y = H[, rule = ...]
+            header_found = True
+            m = re.search(r"x\s*=\s*(\d+)", stripped)
+            if m:
+                width = int(m.group(1))
+            m = re.search(r"y\s*=\s*(\d+)", stripped)
+            if m:
+                height = int(m.group(1))
+            m = re.search(r"rule\s*=\s*(\S+)", stripped, re.IGNORECASE)
+            if m:
+                rule_str = m.group(1)
+            continue
+        # Accumulate pattern data (ignore whitespace)
+        pattern_data += stripped
+        if "!" in stripped:
+            break
+
+    # Remove anything after '!'
+    pattern_data = pattern_data.split("!")[0]
+
+    # Decode the run-length data
+    rows_2d = []
+    current_row = []
+    i = 0
+    while i < len(pattern_data):
+        # Parse optional run count
+        run_count = 0
+        while i < len(pattern_data) and pattern_data[i].isdigit():
+            run_count = run_count * 10 + int(pattern_data[i])
+            i += 1
+        if run_count == 0:
+            run_count = 1
+        if i >= len(pattern_data):
+            break
+        ch = pattern_data[i]
+        i += 1
+        if ch == "b":
+            current_row.extend([0] * run_count)
+        elif ch == "o":
+            current_row.extend([1] * run_count)
+        elif ch == "$":
+            rows_2d.append(current_row)
+            # '$' can have a run count meaning multiple row-ends
+            for _ in range(run_count - 1):
+                rows_2d.append([])
+            current_row = []
+
+    # Flush last row
+    if current_row:
+        rows_2d.append(current_row)
+
+    # Normalise row widths (pad with 0s to the declared width or max width)
+    target_w = max(width, max((len(r) for r in rows_2d), default=0))
+    for row in rows_2d:
+        if len(row) < target_w:
+            row.extend([0] * (target_w - len(row)))
+
+    return rows_2d, name, rule_str
+
+
+def encode_rle(stamp, name="", rule_str="B3/S23"):
+    """Encode a 2D list of 0/1 into RLE format text."""
+    if not stamp or not stamp[0]:
+        return ""
+    height = len(stamp)
+    width = max(len(r) for r in stamp)
+
+    lines = []
+    if name:
+        lines.append(f"#N {name}")
+    lines.append(f"x = {width}, y = {height}, rule = {rule_str}")
+
+    # Build the pattern data
+    data = ""
+    for r_idx, row in enumerate(stamp):
+        # Pad row to full width
+        padded = list(row) + [0] * (width - len(row))
+        # Strip trailing dead cells (they're implicit)
+        while padded and padded[-1] == 0:
+            padded.pop()
+
+        # Run-length encode this row
+        i = 0
+        while i < len(padded):
+            val = padded[i]
+            count = 1
+            while i + count < len(padded) and padded[i + count] == val:
+                count += 1
+            ch = "o" if val else "b"
+            if count > 1:
+                data += f"{count}{ch}"
+            else:
+                data += ch
+            i += count
+
+        if r_idx < height - 1:
+            data += "$"
+
+    data += "!"
+
+    # Wrap lines at 70 characters
+    while len(data) > 70:
+        lines.append(data[:70])
+        data = data[70:]
+    lines.append(data)
+
+    return "\n".join(lines) + "\n"
+
+
+def load_rle(filepath, rows, cols):
+    """Load an RLE file into a new grid, centred."""
+    with open(filepath, "r") as f:
+        text = f.read()
+    pattern_rows, _name, _rule = parse_rle(text)
+    if not pattern_rows:
+        return make_grid(rows, cols)
+    p_rows = len(pattern_rows)
+    p_cols = max(len(r) for r in pattern_rows)
+    grid = make_grid(rows, cols)
+    off_r = (rows - p_rows) // 2
+    off_c = (cols - p_cols) // 2
+    for r, row in enumerate(pattern_rows):
+        for c, val in enumerate(row):
+            nr, nc = r + off_r, c + off_c
+            if 0 <= nr < rows and 0 <= nc < cols:
+                grid[nr][nc] = val
+    return grid
+
+
+def save_rle(grid, filepath, rule=None):
+    """Save grid to an RLE file."""
+    os.makedirs(os.path.dirname(filepath) if os.path.dirname(filepath) else ".", exist_ok=True)
+    rows, cols = len(grid), len(grid[0])
+    # Find bounding box of live cells
+    min_r = min_c = float("inf")
+    max_r = max_c = float("-inf")
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r][c]:
+                min_r = min(min_r, r)
+                max_r = max(max_r, r)
+                min_c = min(min_c, c)
+                max_c = max(max_c, c)
+    name = os.path.splitext(os.path.basename(filepath))[0]
+    if min_r == float("inf"):
+        # Empty grid
+        with open(filepath, "w") as f:
+            f.write(encode_rle([[0]], name=name))
+        return
+    # Extract the bounding box as a stamp
+    stamp = []
+    for r in range(min_r, max_r + 1):
+        row = []
+        for c in range(min_c, max_c + 1):
+            row.append(1 if grid[r][c] else 0)
+        stamp.append(row)
+    rule_str = "B3/S23"
+    if rule:
+        b = "".join(str(d) for d in sorted(rule["b"]))
+        s = "".join(str(d) for d in sorted(rule["s"]))
+        rule_str = f"B{b}/S{s}"
+    with open(filepath, "w") as f:
+        f.write(encode_rle(stamp, name=name, rule_str=rule_str))
+
+
+def _load_pattern_file(filepath, rows, cols):
+    """Load a pattern file (.cells or .rle) based on extension."""
+    if filepath.lower().endswith(".rle"):
+        return load_rle(filepath, rows, cols)
+    return load_cells(filepath, rows, cols)
+
+
 def curses_input(stdscr, prompt, max_y, max_x):
     """Get a line of text input from the user in curses."""
     curses.curs_set(1)
@@ -173,10 +367,10 @@ def curses_input(stdscr, prompt, max_y, max_x):
 
 
 def list_saved_patterns():
-    """Return list of .cells files in the patterns directory."""
+    """Return list of .cells and .rle files in the patterns directory."""
     if not os.path.isdir(CELLS_DIR):
         return []
-    return sorted(f for f in os.listdir(CELLS_DIR) if f.endswith(".cells"))
+    return sorted(f for f in os.listdir(CELLS_DIR) if f.endswith(".cells") or f.endswith(".rle"))
 
 
 def make_grid(rows, cols):
@@ -533,7 +727,7 @@ def run(stdscr, grid, speed, rule=None):
             sel_w = abs(cursor_c - sel_anchor_c) + 1
             status = f" SELECT ({sel_anchor_r},{sel_anchor_c})->({cursor_r},{cursor_c}) {sel_h}x{sel_w} | [arrows]resize [y]ank [x]cut [esc]cancel"
         elif editing:
-            status = f" EDITOR ({cursor_r},{cursor_c}) | Gen {generation} | {rule_label} | [arrows]move [enter/space]toggle [v]select [p]aste [P]attern stamp [s]ave [l]oad [c]lear [R]ule [e]exit [q]uit"
+            status = f" EDITOR ({cursor_r},{cursor_c}) | Gen {generation} | {rule_label} | [arrows]move [enter/space]toggle [v]select [p]aste [P]attern [s]ave(rle/cells) [l]oad [c]lear [R]ule [e]xit [q]uit"
         else:
             pop_str = f" | Pop {pop}" if not show_stats else ""
             state_str = 'REWOUND' if browsing_history else ('PAUSED' if paused else 'Running')
@@ -678,11 +872,19 @@ def run(stdscr, grid, speed, rule=None):
                 pop_history = []
             elif key == ord("s"):
                 max_y, max_x = stdscr.getmaxyx()
+                fmt = curses_input(stdscr, "Format [r]le / [c]ells (default: rle): ", max_y, max_x).strip().lower()
+                if fmt == "" or fmt == "r" or fmt == "rle":
+                    ext, use_rle = ".rle", True
+                else:
+                    ext, use_rle = ".cells", False
                 name = curses_input(stdscr, "Save as (name, no ext): ", max_y, max_x)
                 if name:
                     os.makedirs(CELLS_DIR, exist_ok=True)
-                    filepath = os.path.join(CELLS_DIR, name + ".cells")
-                    save_cells(grid, filepath)
+                    filepath = os.path.join(CELLS_DIR, name + ext)
+                    if use_rle:
+                        save_rle(grid, filepath, rule)
+                    else:
+                        save_cells(grid, filepath)
             elif key == ord("l"):
                 max_y, max_x = stdscr.getmaxyx()
                 patterns = list_saved_patterns()
@@ -714,7 +916,7 @@ def run(stdscr, grid, speed, rule=None):
                             sel = (sel + 1) % len(patterns)
                         elif pk in (ord("\n"), curses.KEY_ENTER):
                             filepath = os.path.join(CELLS_DIR, patterns[sel])
-                            grid = load_cells(filepath, rows, cols)
+                            grid = _load_pattern_file(filepath, rows, cols)
                             generation = 0
                             history = [copy.deepcopy(grid)]
                             hist_idx = 0
@@ -728,7 +930,7 @@ def run(stdscr, grid, speed, rule=None):
                     # No saved patterns; prompt for a file path
                     path = curses_input(stdscr, "Load file path: ", max_y, max_x)
                     if path and os.path.isfile(path):
-                        grid = load_cells(path, rows, cols)
+                        grid = _load_pattern_file(path, rows, cols)
                         generation = 0
                         history = [copy.deepcopy(grid)]
                         hist_idx = 0
@@ -852,7 +1054,7 @@ def main():
         "--load",
         type=str,
         default=None,
-        help="Load a .cells file (path or name from ~/.life-patterns/)",
+        help="Load a .cells or .rle file (path or name from ~/.life-patterns/)",
     )
     parser.add_argument(
         "--rule",
@@ -876,12 +1078,13 @@ def main():
         path = args.load
         # If it's just a name, look in the patterns directory
         if not os.path.isfile(path):
-            candidate = os.path.join(CELLS_DIR, path)
-            if not candidate.endswith(".cells"):
-                candidate += ".cells"
-            if os.path.isfile(candidate):
-                path = candidate
-        grid = load_cells(path, args.rows, args.cols)
+            # Try both .rle and .cells extensions
+            for ext in ("", ".rle", ".cells"):
+                candidate = os.path.join(CELLS_DIR, path + ext)
+                if os.path.isfile(candidate):
+                    path = candidate
+                    break
+        grid = _load_pattern_file(path, args.rows, args.cols)
     else:
         place_pattern(grid, args.pattern)
     curses.wrapper(lambda stdscr: run(stdscr, grid, args.speed, rule))

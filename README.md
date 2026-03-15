@@ -25,7 +25,7 @@ python3 life.py --rule B2/S                        # custom rule via B/S notatio
 | `--cols`    | 80        | Grid width                           |
 | `--speed`   | 0.1       | Delay between generations (seconds)  |
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
-| `--load`    | —         | Load a `.cells` file (path or name from `~/.life-patterns/`) |
+| `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
 | `--rule`    | `life`    | Rule preset or B/S notation (e.g. `B36/S23`) |
 
 ### Controls
@@ -55,7 +55,7 @@ Press `e` to enter an interactive cell editor. The simulation pauses and a curso
 | `v`             | Enter select mode (rectangular region) |
 | `p`             | Paste clipboard at cursor |
 | `P`             | Open pattern stamp picker |
-| `s`             | Save grid to a `.cells` file |
+| `s`             | Save grid (RLE or `.cells` format) |
 | `l`             | Load a pattern (picker or path) |
 | `c`             | Clear the entire grid     |
 | `R`             | Cycle to next ruleset     |
@@ -93,11 +93,11 @@ Press `P` in the editor to open an interactive picker that lists all built-in pa
 
 ### Save / Load
 
-Patterns are saved in the standard plaintext `.cells` format, compatible with files from the broader Game of Life community. Saved patterns live in `~/.life-patterns/` by default.
+Patterns can be saved in **RLE** (Run Length Encoded) or plaintext **`.cells`** format. RLE is the standard used by LifeWiki, Golly, and every major pattern collection — supporting it means you can import thousands of patterns (spaceships, oscillators, guns, breeders) from online libraries and export your creations in a format others can use. Saved patterns live in `~/.life-patterns/` by default.
 
-- **Save from editor** — press `s`, type a name, and the current grid is exported with empty borders trimmed.
-- **Load from editor** — press `l` to browse saved patterns with an interactive picker (arrow keys + enter), or enter a file path if no patterns are saved yet.
-- **Load at startup** — use `--load <name-or-path>` to start with a pattern from your library or any `.cells` file.
+- **Save from editor** — press `s`, choose format (RLE default, or `.cells`), type a name, and the current grid is exported with empty borders trimmed. RLE files include the active ruleset in the header.
+- **Load from editor** — press `l` to browse saved patterns (both `.rle` and `.cells`) with an interactive picker (arrow keys + enter), or enter a file path if no patterns are saved yet.
+- **Load at startup** — use `--load <name-or-path>` to start with a pattern from your library. The loader auto-detects format by extension and tries `.rle` before `.cells` when resolving names.
 
 ## Rulesets
 
@@ -158,4 +158,4 @@ The editor includes a full clipboard system for working with rectangular regions
   - **Blue** (age 9–20) — mature
   - **Magenta** (age 21+) — ancient / stable structures
 - **Curses rendering** — each live cell is drawn as a double-width block (`██`) for a square aspect ratio.
-- **All standard library** — only `curses`, `argparse`, `copy`, `os`, `time`, and `random` are used.
+- **All standard library** — only `curses`, `argparse`, `copy`, `os`, `re`, `time`, and `random` are used.
