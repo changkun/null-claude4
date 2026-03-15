@@ -1,6 +1,6 @@
 # Cellular Automaton — Terminal Simulator
 
-A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, the **Ising Model** statistical mechanics spin simulation, and supports arbitrary rules via B/S notation.
+A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, the **Ising Model** statistical mechanics spin simulation, a **split-screen comparison mode** for watching two simulations side-by-side, and supports arbitrary rules via B/S notation.
 
 ## Usage
 
@@ -43,6 +43,9 @@ python3 life.py --rule ising                                 # Ising Model (crit
 python3 life.py --rule ising --ising-preset cold              # large ordered domains
 python3 life.py --script probabilistic_life        # run a user script on startup
 python3 life.py --script ~/my_script.py            # run a script from a file path
+python3 life.py --compare life highlife              # split-screen: Life vs HighLife
+python3 life.py --compare B36/S23 forestfire         # split-screen: custom rule vs Forest Fire
+python3 life.py --compare ising grayscott            # split-screen: Ising Model vs Gray-Scott
 python3 life.py --discover                         # evolve interesting rulesets via GA
 python3 life.py --discover --ga-generations 100    # more generations for deeper search
 python3 life.py --render 100 --palette ember       # 100 PNG frames with ember palette
@@ -79,6 +82,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--cell-size`| 8         | Pixel size of each cell for PNG rendering |
 | `--palette`  | `classic` | Color palette for PNG rendering (`classic`, `ember`, `ocean`, `mono`, `matrix`) |
 | `--grid-lines`| off      | Draw 1px grid lines between cells in PNG output |
+| `--compare`  | —         | Split-screen comparison: two rule names (e.g. `--compare life highlife`) |
 | `--no-aa`    | off       | Disable anti-aliasing on cell edges in PNG output |
 | `--output-dir`| `frames` | Output directory for rendered PNG frames |
 
@@ -1031,6 +1035,40 @@ Press `T` to cycle through four topological surface modes that change how the gr
 - **NumPy backend** — `scipy.signal.convolve2d` only supports toroidal wrapping, so non-torus topologies automatically fall back to the pure Python engine. The `NumPy` indicator in the status bar is hidden when a non-torus topology is active.
 - **HashLife** — the quadtree engine assumes toroidal wrapping. Switching to a non-torus topology while HashLife is active automatically deactivates it and exports the grid back to the standard engine.
 - **Status bar** — shows the topology name (e.g., `Klein Bottle`) when a non-default topology is selected. The torus label is hidden since it's the default.
+
+## Split-Screen Comparison Mode
+
+Run two simulations side-by-side in the same terminal to visually compare different rulesets, parameters, or topologies evolving from the same initial pattern.
+
+```bash
+python3 life.py --compare life highlife        # Conway's Life vs HighLife
+python3 life.py --compare ising grayscott      # Ising Model vs Gray-Scott
+python3 life.py --compare B36/S23 seeds        # custom B/S rule vs Seeds
+```
+
+The terminal is split into left and right panes separated by a `│` divider. Each pane runs its own independent simulation with its own generation counter, speed, pause state, history buffer, and module-level state (so specialized modes like Gray-Scott, Wa-Tor, Ising, etc. don't interfere with each other).
+
+### Controls (Compare mode)
+
+Press `Tab` to switch which pane receives input. The active pane is marked with `*` in its status bar.
+
+| Key       | Action                                      |
+|-----------|---------------------------------------------|
+| `Tab`     | Switch active pane                          |
+| `Space`   | Pause / resume the active pane              |
+| `n`       | Step one generation (when paused)           |
+| `+` / `-` | Speed up / slow down the active pane       |
+| `r`       | Randomize the active pane's grid            |
+| `R`       | Cycle to next ruleset in the active pane    |
+| `[` / `]` | Scrub through history in the active pane   |
+| `b`       | Jump to beginning of history                |
+| `q`       | Quit                                        |
+
+### How it works
+
+Each pane maintains a fully independent simulation state. Before stepping a pane's simulation forward, the engine saves the other pane's module-level globals and restores the current pane's — this allows specialized modes that rely on module state (Gray-Scott concentrations, Wa-Tor population grids, Ising spin lattices, Physarum trail maps, etc.) to coexist without cross-contamination.
+
+All 20+ simulation modes are supported, and you can mix any two freely — compare a B/S cellular automaton against a continuous reaction-diffusion system, or watch two Ising models at different temperatures.
 
 ## Design Notes
 

@@ -6830,6 +6830,627 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         time.sleep(delay)
 
 
+# --- Split-Screen Comparison Mode ---
+
+
+def _save_module_state(rule):
+    """Snapshot all module-level state that specialised sim modes use.
+
+    Returns a dict that can be passed to _restore_module_state later.
+    Only captures state relevant to the given *rule* to keep things fast.
+    """
+    global _topology
+    state = {"_topology": _topology}
+
+    if _is_grayscott(rule):
+        state.update({
+            "_gs_u": copy.deepcopy(_gs_u),
+            "_gs_v": copy.deepcopy(_gs_v),
+            "_gs_feed": _gs_feed,
+            "_gs_kill": _gs_kill,
+            "_gs_preset_idx": _gs_preset_idx,
+        })
+    elif _is_wator(rule):
+        state.update({
+            "_wator_grid": copy.deepcopy(_wator_grid),
+            "_wator_fish_age": copy.deepcopy(_wator_fish_age),
+            "_wator_shark_age": copy.deepcopy(_wator_shark_age),
+            "_wator_shark_energy": copy.deepcopy(_wator_shark_energy),
+            "_wator_rows": _wator_rows,
+            "_wator_cols": _wator_cols,
+            "_wator_fish_breed": _wator_fish_breed,
+            "_wator_shark_breed": _wator_shark_breed,
+            "_wator_shark_starve": _wator_shark_starve,
+            "_wator_preset_idx": _wator_preset_idx,
+        })
+    elif _is_elementary(rule):
+        state.update({
+            "_eca_rule_num": _eca_rule_num,
+            "_eca_state": copy.deepcopy(_eca_state),
+            "_eca_history": copy.deepcopy(_eca_history),
+            "_eca_notable_idx": _eca_notable_idx,
+        })
+    elif _is_lenia(rule):
+        state.update({
+            "_lenia_A": copy.deepcopy(_lenia_A),
+            "_lenia_kernel": copy.deepcopy(_lenia_kernel),
+            "_lenia_preset_idx": _lenia_preset_idx,
+            "_lenia_R": _lenia_R,
+            "_lenia_T": _lenia_T,
+            "_lenia_mu": _lenia_mu,
+            "_lenia_sigma": _lenia_sigma,
+            "_lenia_beta": copy.deepcopy(_lenia_beta),
+        })
+    elif _is_turmite(rule):
+        state.update({
+            "_turmite_grid": copy.deepcopy(_turmite_grid),
+            "_turmite_ants": copy.deepcopy(_turmite_ants),
+            "_turmite_table": copy.deepcopy(_turmite_table),
+            "_turmite_num_colors": _turmite_num_colors,
+            "_turmite_preset_idx": _turmite_preset_idx,
+        })
+    elif _is_fallingsand(rule):
+        state.update({
+            "_fs_grid": copy.deepcopy(_fs_grid),
+            "_fs_lifetime": copy.deepcopy(_fs_lifetime),
+            "_fs_preset_idx": _fs_preset_idx,
+            "_fs_rows": _fs_rows,
+            "_fs_cols": _fs_cols,
+        })
+    elif _is_physarum(rule):
+        state.update({
+            "_phys_trail": copy.deepcopy(_phys_trail),
+            "_phys_agents": copy.deepcopy(_phys_agents),
+            "_phys_rows": _phys_rows,
+            "_phys_cols": _phys_cols,
+            "_phys_preset_idx": _phys_preset_idx,
+            "_phys_sensor_angle": _phys_sensor_angle,
+            "_phys_sensor_dist": _phys_sensor_dist,
+            "_phys_turn_speed": _phys_turn_speed,
+            "_phys_deposit": _phys_deposit,
+            "_phys_decay": _phys_decay,
+            "_phys_diffuse_k": _phys_diffuse_k,
+        })
+    elif _is_sandpile(rule):
+        state.update({
+            "_sp_grid": copy.deepcopy(_sp_grid),
+            "_sp_rows": _sp_rows,
+            "_sp_cols": _sp_cols,
+            "_sp_preset_idx": _sp_preset_idx,
+            "_sp_mode": _sp_mode,
+            "_sp_grains_per_step": _sp_grains_per_step,
+            "_sp_total_grains": _sp_total_grains,
+        })
+    elif _is_dla(rule):
+        state.update({
+            "_dla_grid": copy.deepcopy(_dla_grid),
+            "_dla_rows": _dla_rows,
+            "_dla_cols": _dla_cols,
+            "_dla_preset_idx": _dla_preset_idx,
+            "_dla_walkers_per_step": _dla_walkers_per_step,
+            "_dla_bias_x": _dla_bias_x,
+            "_dla_bias_y": _dla_bias_y,
+            "_dla_sticking_prob": _dla_sticking_prob,
+            "_dla_next_id": _dla_next_id,
+            "_dla_occupied": copy.deepcopy(_dla_occupied),
+        })
+    elif _is_forestfire(rule):
+        state.update({
+            "_ff_grid": copy.deepcopy(_ff_grid),
+            "_ff_rows": _ff_rows,
+            "_ff_cols": _ff_cols,
+            "_ff_preset_idx": _ff_preset_idx,
+            "_ff_p_grow": _ff_p_grow,
+            "_ff_f_lightning": _ff_f_lightning,
+        })
+    elif _is_ising(rule):
+        state.update({
+            "_ising_grid": copy.deepcopy(_ising_grid),
+            "_ising_rows": _ising_rows,
+            "_ising_cols": _ising_cols,
+            "_ising_preset_idx": _ising_preset_idx,
+            "_ising_temperature": _ising_temperature,
+        })
+    return state
+
+
+def _restore_module_state(rule, state):
+    """Restore module-level globals from a previously saved snapshot."""
+    global _topology
+    _topology = state["_topology"]
+
+    if _is_grayscott(rule):
+        global _gs_u, _gs_v, _gs_feed, _gs_kill, _gs_preset_idx
+        _gs_u = state["_gs_u"]
+        _gs_v = state["_gs_v"]
+        _gs_feed = state["_gs_feed"]
+        _gs_kill = state["_gs_kill"]
+        _gs_preset_idx = state["_gs_preset_idx"]
+    elif _is_wator(rule):
+        global _wator_grid, _wator_fish_age, _wator_shark_age, _wator_shark_energy
+        global _wator_rows, _wator_cols, _wator_fish_breed, _wator_shark_breed, _wator_shark_starve, _wator_preset_idx
+        _wator_grid = state["_wator_grid"]
+        _wator_fish_age = state["_wator_fish_age"]
+        _wator_shark_age = state["_wator_shark_age"]
+        _wator_shark_energy = state["_wator_shark_energy"]
+        _wator_rows = state["_wator_rows"]
+        _wator_cols = state["_wator_cols"]
+        _wator_fish_breed = state["_wator_fish_breed"]
+        _wator_shark_breed = state["_wator_shark_breed"]
+        _wator_shark_starve = state["_wator_shark_starve"]
+        _wator_preset_idx = state["_wator_preset_idx"]
+    elif _is_elementary(rule):
+        global _eca_rule_num, _eca_state, _eca_history, _eca_notable_idx
+        _eca_rule_num = state["_eca_rule_num"]
+        _eca_state = state["_eca_state"]
+        _eca_history = state["_eca_history"]
+        _eca_notable_idx = state["_eca_notable_idx"]
+    elif _is_lenia(rule):
+        global _lenia_A, _lenia_kernel, _lenia_preset_idx, _lenia_R, _lenia_T, _lenia_mu, _lenia_sigma, _lenia_beta
+        _lenia_A = state["_lenia_A"]
+        _lenia_kernel = state["_lenia_kernel"]
+        _lenia_preset_idx = state["_lenia_preset_idx"]
+        _lenia_R = state["_lenia_R"]
+        _lenia_T = state["_lenia_T"]
+        _lenia_mu = state["_lenia_mu"]
+        _lenia_sigma = state["_lenia_sigma"]
+        _lenia_beta = state["_lenia_beta"]
+    elif _is_turmite(rule):
+        global _turmite_grid, _turmite_ants, _turmite_table, _turmite_num_colors, _turmite_preset_idx
+        _turmite_grid = state["_turmite_grid"]
+        _turmite_ants = state["_turmite_ants"]
+        _turmite_table = state["_turmite_table"]
+        _turmite_num_colors = state["_turmite_num_colors"]
+        _turmite_preset_idx = state["_turmite_preset_idx"]
+    elif _is_fallingsand(rule):
+        global _fs_grid, _fs_lifetime, _fs_preset_idx, _fs_rows, _fs_cols
+        _fs_grid = state["_fs_grid"]
+        _fs_lifetime = state["_fs_lifetime"]
+        _fs_preset_idx = state["_fs_preset_idx"]
+        _fs_rows = state["_fs_rows"]
+        _fs_cols = state["_fs_cols"]
+    elif _is_physarum(rule):
+        global _phys_trail, _phys_agents, _phys_rows, _phys_cols, _phys_preset_idx
+        global _phys_sensor_angle, _phys_sensor_dist, _phys_turn_speed, _phys_deposit, _phys_decay, _phys_diffuse_k
+        _phys_trail = state["_phys_trail"]
+        _phys_agents = state["_phys_agents"]
+        _phys_rows = state["_phys_rows"]
+        _phys_cols = state["_phys_cols"]
+        _phys_preset_idx = state["_phys_preset_idx"]
+        _phys_sensor_angle = state["_phys_sensor_angle"]
+        _phys_sensor_dist = state["_phys_sensor_dist"]
+        _phys_turn_speed = state["_phys_turn_speed"]
+        _phys_deposit = state["_phys_deposit"]
+        _phys_decay = state["_phys_decay"]
+        _phys_diffuse_k = state["_phys_diffuse_k"]
+    elif _is_sandpile(rule):
+        global _sp_grid, _sp_rows, _sp_cols, _sp_preset_idx, _sp_mode, _sp_grains_per_step, _sp_total_grains
+        _sp_grid = state["_sp_grid"]
+        _sp_rows = state["_sp_rows"]
+        _sp_cols = state["_sp_cols"]
+        _sp_preset_idx = state["_sp_preset_idx"]
+        _sp_mode = state["_sp_mode"]
+        _sp_grains_per_step = state["_sp_grains_per_step"]
+        _sp_total_grains = state["_sp_total_grains"]
+    elif _is_dla(rule):
+        global _dla_grid, _dla_rows, _dla_cols, _dla_preset_idx
+        global _dla_walkers_per_step, _dla_bias_x, _dla_bias_y, _dla_sticking_prob, _dla_next_id, _dla_occupied
+        _dla_grid = state["_dla_grid"]
+        _dla_rows = state["_dla_rows"]
+        _dla_cols = state["_dla_cols"]
+        _dla_preset_idx = state["_dla_preset_idx"]
+        _dla_walkers_per_step = state["_dla_walkers_per_step"]
+        _dla_bias_x = state["_dla_bias_x"]
+        _dla_bias_y = state["_dla_bias_y"]
+        _dla_sticking_prob = state["_dla_sticking_prob"]
+        _dla_next_id = state["_dla_next_id"]
+        _dla_occupied = state["_dla_occupied"]
+    elif _is_forestfire(rule):
+        global _ff_grid, _ff_rows, _ff_cols, _ff_preset_idx, _ff_p_grow, _ff_f_lightning
+        _ff_grid = state["_ff_grid"]
+        _ff_rows = state["_ff_rows"]
+        _ff_cols = state["_ff_cols"]
+        _ff_preset_idx = state["_ff_preset_idx"]
+        _ff_p_grow = state["_ff_p_grow"]
+        _ff_f_lightning = state["_ff_f_lightning"]
+    elif _is_ising(rule):
+        global _ising_grid, _ising_rows, _ising_cols, _ising_preset_idx, _ising_temperature
+        _ising_grid = state["_ising_grid"]
+        _ising_rows = state["_ising_rows"]
+        _ising_cols = state["_ising_cols"]
+        _ising_preset_idx = state["_ising_preset_idx"]
+        _ising_temperature = state["_ising_temperature"]
+
+
+def _cell_color_pair(age, rule):
+    """Return the curses color-pair number for a cell value under *rule*."""
+    if _is_forestfire(rule):
+        return _ff_color(age)
+    if _is_ising(rule):
+        return _ising_color(age)
+    if _is_dla(rule):
+        return _dla_color(age)
+    if _is_sandpile(rule):
+        return _sp_color(age)
+    if _is_fallingsand(rule):
+        return _fs_color(age)
+    if _is_wator(rule):
+        return _wator_color(age)
+    if _is_turmite(rule):
+        return _turmite_color(age)
+    if _is_grayscott(rule) or _is_lenia(rule) or _is_physarum(rule):
+        return _grayscott_color(age)
+    if _is_wireworld(rule):
+        return _wireworld_color(age) if age else 1
+    return _age_color(age) if age else 1
+
+
+def _cell_str(age, rule):
+    """Return the two-char display string for a cell value under *rule*."""
+    if _is_ising(rule):
+        return "\u2588\u2588"
+    if _is_grayscott(rule) or _is_lenia(rule) or _is_physarum(rule):
+        return "\u2588\u2588" if age > 3 else "  "
+    return "\u2588\u2588" if age else "  "
+
+
+def run_split(stdscr, grid_l, grid_r, speed, rule_l, rule_r,
+              init_mod_state_l=None, init_mod_state_r=None):
+    """Run two simulations side-by-side in a split-screen terminal view.
+
+    Tab switches which pane receives input.  Each pane has independent
+    pause/step/rewind controls.  Press 'q' to quit.
+
+    *init_mod_state_l* / *init_mod_state_r* are optional pre-saved module
+    state dicts (from _save_module_state) for each pane.  If not supplied
+    the function snapshots the current module state for each rule, which
+    only works correctly if the caller has set up the globals for
+    *rule_r* last (since the globals are shared).
+    """
+    curses.curs_set(0)
+    stdscr.nodelay(True)
+    curses.start_color()
+    curses.use_default_colors()
+    curses.init_pair(1, curses.COLOR_GREEN, -1)
+    curses.init_pair(2, curses.COLOR_WHITE, -1)
+    curses.init_pair(3, curses.COLOR_BLACK, curses.COLOR_YELLOW)
+    curses.init_pair(4, curses.COLOR_BLACK, curses.COLOR_GREEN)
+    curses.init_pair(5, curses.COLOR_CYAN, -1)
+    curses.init_pair(6, curses.COLOR_BLUE, -1)
+    curses.init_pair(7, curses.COLOR_MAGENTA, -1)
+    curses.init_pair(8, curses.COLOR_BLACK, curses.COLOR_CYAN)
+    curses.init_pair(9, curses.COLOR_BLACK, curses.COLOR_MAGENTA)
+    curses.init_pair(10, curses.COLOR_BLACK, curses.COLOR_RED)
+    curses.init_pair(11, curses.COLOR_WHITE, curses.COLOR_RED)
+    curses.init_pair(12, curses.COLOR_YELLOW, -1)
+    curses.init_pair(13, curses.COLOR_RED, -1)
+    curses.init_pair(14, curses.COLOR_BLUE, -1)
+    curses.init_pair(15, curses.COLOR_YELLOW, -1)
+    curses.init_pair(16, curses.COLOR_BLACK, curses.COLOR_BLUE)
+    curses.init_pair(17, curses.COLOR_BLACK, curses.COLOR_RED)
+    curses.init_pair(18, curses.COLOR_BLACK, curses.COLOR_YELLOW)
+    curses.init_pair(19, curses.COLOR_BLUE, -1)
+    curses.init_pair(20, curses.COLOR_WHITE, -1)
+    curses.init_pair(21, curses.COLOR_RED, -1)
+
+    rows_l, cols_l = len(grid_l), len(grid_l[0])
+    rows_r, cols_r = len(grid_r), len(grid_r[0])
+
+    # Per-pane state ---------------------------------------------------------
+    grids = [grid_l, grid_r]
+    rules = [rule_l, rule_r]
+    generations = [0, 0]
+    paused = [False, False]
+    histories = [[copy.deepcopy(grid_l)], [copy.deepcopy(grid_r)]]
+    hist_idxs = [0, 0]
+    browsing = [False, False]
+    pop_histories = [[], []]
+    delays = [speed, speed]
+    max_history = 5000
+    max_pop_history = 500
+
+    # Module-level state snapshots for each pane.  If the caller passed
+    # pre-saved states, use those; otherwise snapshot now (assumes the caller
+    # left the right pane's globals live).
+    if init_mod_state_l is not None and init_mod_state_r is not None:
+        mod_states = [init_mod_state_l, init_mod_state_r]
+    else:
+        mod_states = [_save_module_state(rule_l), _save_module_state(rule_r)]
+
+    focus = 0  # 0 = left pane focused, 1 = right
+
+    while True:
+        stdscr.erase()
+        max_y, max_x = stdscr.getmaxyx()
+        if max_x < 20 or max_y < 5:
+            time.sleep(0.1)
+            key = stdscr.getch()
+            if key == ord("q"):
+                break
+            continue
+
+        # Layout: split terminal into left half | divider | right half
+        divider_col = max_x // 2
+        pane_w_chars = divider_col  # chars available per pane (including cells)
+        pane_cols = (pane_w_chars - 1) // 2  # grid columns that fit (2 chars each)
+        pane_rows = max_y - 2  # leave 2 rows for status bars
+
+        # Track population
+        for p in range(2):
+            pop = _count_population(grids[p])
+            if not browsing[p]:
+                pop_histories[p].append(pop)
+                if len(pop_histories[p]) > max_pop_history:
+                    pop_histories[p].pop(0)
+
+        # ---- Render both panes ----
+        for pane in range(2):
+            x_off = 0 if pane == 0 else divider_col + 1
+            g = grids[pane]
+            r_rule = rules[pane]
+            g_rows = len(g)
+            g_cols = len(g[0])
+            vis_r = min(g_rows, pane_rows)
+            vis_c = min(g_cols, pane_cols)
+
+            for r in range(vis_r):
+                for c in range(vis_c):
+                    age = g[r][c]
+                    cs = _cell_str(age, r_rule)
+                    cp = _cell_color_pair(age, r_rule)
+                    try:
+                        stdscr.addstr(r, x_off + c * 2, cs, curses.color_pair(cp))
+                    except curses.error:
+                        pass
+
+        # ---- Draw divider ----
+        for r in range(min(max_y - 2, max(len(grid_l), len(grid_r)))):
+            try:
+                stdscr.addstr(r, divider_col, "\u2502", curses.color_pair(2) | curses.A_DIM)
+            except curses.error:
+                pass
+
+        # ---- Status bars ----
+        # Per-pane status on the second-to-last row
+        pane_status_y = max_y - 2
+        for pane in range(2):
+            x_off = 0 if pane == 0 else divider_col + 1
+            avail = divider_col - 1 if pane == 0 else max_x - divider_col - 2
+            r_rule = rules[pane]
+            label = r_rule.get("name", "Custom")
+            state_str = "REWOUND" if browsing[pane] else ("PAUSED" if paused[pane] else "Running")
+            pop = pop_histories[pane][-1] if pop_histories[pane] else 0
+            hist_str = f" H:{hist_idxs[pane]}/{len(histories[pane])-1}" if browsing[pane] else ""
+            focus_marker = " *" if pane == focus else ""
+            info = f" Gen {generations[pane]} | {label} | {state_str} | Pop {pop}{hist_str}{focus_marker}"
+            attr = curses.color_pair(2) | curses.A_REVERSE
+            if pane == focus:
+                attr |= curses.A_BOLD
+            try:
+                stdscr.addstr(pane_status_y, x_off, info[:avail], attr)
+            except curses.error:
+                pass
+
+        # Shared help bar on the last row
+        help_y = max_y - 1
+        help_str = " [Tab]focus [space]pause [n]step [+/-]speed [r]andom [[][]]scrub [b]egin [R]ule [q]uit"
+        try:
+            stdscr.addstr(help_y, 0, help_str[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
+        except curses.error:
+            pass
+
+        stdscr.refresh()
+
+        # ---- Handle input ----
+        key = stdscr.getch()
+        if key == ord("q"):
+            break
+        elif key == ord("\t"):
+            # Switch focus
+            focus = 1 - focus
+        elif key == ord(" "):
+            if not browsing[focus]:
+                paused[focus] = not paused[focus]
+            else:
+                # Unpause from history: fork
+                del histories[focus][hist_idxs[focus] + 1:]
+                grids[focus] = copy.deepcopy(histories[focus][hist_idxs[focus]])
+                generations[focus] = hist_idxs[focus]
+                browsing[focus] = False
+                paused[focus] = False
+                pop_histories[focus] = [_count_population(h) for h in histories[focus][-max_pop_history:]]
+        elif key == ord("+") or key == ord("="):
+            delays[focus] = max(0.01, delays[focus] - 0.05)
+        elif key == ord("-") or key == ord("_"):
+            delays[focus] = min(2.0, delays[focus] + 0.05)
+        elif key == ord("n") and (paused[focus] or browsing[focus]):
+            p = focus
+            if browsing[p]:
+                del histories[p][hist_idxs[p] + 1:]
+                grids[p] = copy.deepcopy(histories[p][hist_idxs[p]])
+                browsing[p] = False
+                pop_histories[p] = [_count_population(h) for h in histories[p][-max_pop_history:]]
+            # Save other pane's module state, restore this pane's, step, then swap back
+            other = 1 - p
+            mod_states[other] = _save_module_state(rules[other])
+            _restore_module_state(rules[p], mod_states[p])
+            grids[p] = step(grids[p], rules[p])
+            generations[p] += 1
+            mod_states[p] = _save_module_state(rules[p])
+            _restore_module_state(rules[other], mod_states[other])
+            histories[p].append(copy.deepcopy(grids[p]))
+            hist_idxs[p] = len(histories[p]) - 1
+            if len(histories[p]) > max_history:
+                histories[p].pop(0)
+                hist_idxs[p] -= 1
+        elif key == ord("["):
+            p = focus
+            if hist_idxs[p] > 0:
+                if not browsing[p]:
+                    browsing[p] = True
+                    paused[p] = True
+                hist_idxs[p] -= 1
+                grids[p] = copy.deepcopy(histories[p][hist_idxs[p]])
+                generations[p] = hist_idxs[p]
+        elif key == ord("]"):
+            p = focus
+            if browsing[p] and hist_idxs[p] < len(histories[p]) - 1:
+                hist_idxs[p] += 1
+                grids[p] = copy.deepcopy(histories[p][hist_idxs[p]])
+                generations[p] = hist_idxs[p]
+                if hist_idxs[p] == len(histories[p]) - 1:
+                    browsing[p] = False
+        elif key == ord("b"):
+            p = focus
+            if len(histories[p]) > 1:
+                browsing[p] = True
+                paused[p] = True
+                hist_idxs[p] = 0
+                grids[p] = copy.deepcopy(histories[p][0])
+                generations[p] = 0
+        elif key == ord("r"):
+            p = focus
+            r_rule = rules[p]
+            g_rows = len(grids[p])
+            g_cols = len(grids[p][0])
+            # Save other pane, restore this pane, re-init, save back
+            other = 1 - p
+            mod_states[other] = _save_module_state(rules[other])
+            _restore_module_state(r_rule, mod_states[p])
+            if _is_wator(r_rule):
+                _wator_init(g_rows, g_cols)
+                grids[p] = _wator_to_grid(g_rows, g_cols)
+            elif _is_grayscott(r_rule):
+                _gs_init(g_rows, g_cols)
+                grids[p] = _gs_to_grid(g_rows, g_cols)
+            elif _is_elementary(r_rule):
+                _eca_init(g_cols, init_type="random")
+                grids[p] = _eca_to_grid(g_rows, g_cols)
+            elif _is_physarum(r_rule):
+                _phys_init(g_rows, g_cols)
+                grids[p] = _phys_to_grid(g_rows, g_cols)
+            elif _is_ising(r_rule):
+                _ising_init(g_rows, g_cols)
+                grids[p] = _ising_to_grid(g_rows, g_cols)
+            elif _is_lenia(r_rule):
+                preset = LENIA_PRESETS[LENIA_PRESET_NAMES[_lenia_preset_idx]]
+                _lenia_init(g_rows, g_cols, preset.get("seed", "orbium"))
+                grids[p] = _lenia_to_grid(g_rows, g_cols)
+            elif _is_turmite(r_rule):
+                _turmite_init(g_rows, g_cols)
+                grids[p] = _turmite_to_grid(g_rows, g_cols)
+            elif _is_fallingsand(r_rule):
+                _fs_init(g_rows, g_cols)
+                grids[p] = _fs_to_grid(g_rows, g_cols)
+            elif _is_sandpile(r_rule):
+                _sp_init(g_rows, g_cols)
+                grids[p] = _sp_to_grid(g_rows, g_cols)
+            elif _is_dla(r_rule):
+                _dla_init(g_rows, g_cols)
+                grids[p] = _dla_to_grid(g_rows, g_cols)
+            elif _is_forestfire(r_rule):
+                _ff_init(g_rows, g_cols)
+                grids[p] = _ff_to_grid(g_rows, g_cols)
+            else:
+                import random
+                for r2 in range(g_rows):
+                    for c2 in range(g_cols):
+                        grids[p][r2][c2] = random.randint(0, 1)
+            mod_states[p] = _save_module_state(r_rule)
+            _restore_module_state(rules[other], mod_states[other])
+            generations[p] = 0
+            histories[p] = [copy.deepcopy(grids[p])]
+            hist_idxs[p] = 0
+            browsing[p] = False
+            pop_histories[p] = []
+        elif key == ord("R"):
+            p = focus
+            g_rows = len(grids[p])
+            g_cols = len(grids[p][0])
+            # Find current rule index and cycle
+            cur_idx = -1
+            for i, name in enumerate(RULE_NAMES):
+                if RULES[name] is rules[p]:
+                    cur_idx = i
+                    break
+            if cur_idx >= 0:
+                cur_idx = (cur_idx + 1) % len(RULE_NAMES)
+            else:
+                cur_idx = 0
+            new_rule = RULES[RULE_NAMES[cur_idx]]
+            # Save other, init new mode, save back
+            other = 1 - p
+            mod_states[other] = _save_module_state(rules[other])
+            rules[p] = new_rule
+            # Reinitialise grid for the new mode
+            grids[p] = make_grid(g_rows, g_cols)
+            if _is_wireworld(new_rule):
+                place_wireworld_pattern(grids[p], "ww_clock")
+            elif _is_grayscott(new_rule):
+                _gs_init(g_rows, g_cols)
+                grids[p] = _gs_to_grid(g_rows, g_cols)
+            elif _is_elementary(new_rule):
+                _eca_init(g_cols)
+                grids[p] = _eca_to_grid(g_rows, g_cols)
+            elif _is_lenia(new_rule):
+                preset = LENIA_PRESETS[LENIA_PRESET_NAMES[_lenia_preset_idx]]
+                _lenia_init(g_rows, g_cols, preset.get("seed", "orbium"))
+                grids[p] = _lenia_to_grid(g_rows, g_cols)
+            elif _is_turmite(new_rule):
+                _turmite_init(g_rows, g_cols)
+                grids[p] = _turmite_to_grid(g_rows, g_cols)
+            elif _is_wator(new_rule):
+                _wator_init(g_rows, g_cols)
+                grids[p] = _wator_to_grid(g_rows, g_cols)
+            elif _is_fallingsand(new_rule):
+                _fs_init(g_rows, g_cols)
+                grids[p] = _fs_to_grid(g_rows, g_cols)
+            elif _is_physarum(new_rule):
+                _phys_init(g_rows, g_cols)
+                grids[p] = _phys_to_grid(g_rows, g_cols)
+            elif _is_sandpile(new_rule):
+                _sp_init(g_rows, g_cols)
+                grids[p] = _sp_to_grid(g_rows, g_cols)
+            elif _is_dla(new_rule):
+                _dla_init(g_rows, g_cols)
+                grids[p] = _dla_to_grid(g_rows, g_cols)
+            elif _is_forestfire(new_rule):
+                _ff_init(g_rows, g_cols)
+                grids[p] = _ff_to_grid(g_rows, g_cols)
+            elif _is_ising(new_rule):
+                _ising_init(g_rows, g_cols)
+                grids[p] = _ising_to_grid(g_rows, g_cols)
+            else:
+                place_pattern(grids[p], "random")
+            mod_states[p] = _save_module_state(new_rule)
+            _restore_module_state(rules[other], mod_states[other])
+            generations[p] = 0
+            histories[p] = [copy.deepcopy(grids[p])]
+            hist_idxs[p] = 0
+            browsing[p] = False
+            pop_histories[p] = []
+
+        # ---- Step simulations that are not paused ----
+        stepped_any = False
+        for p in range(2):
+            if not paused[p] and not browsing[p]:
+                other = 1 - p
+                mod_states[other] = _save_module_state(rules[other])
+                _restore_module_state(rules[p], mod_states[p])
+                grids[p] = step(grids[p], rules[p])
+                generations[p] += 1
+                mod_states[p] = _save_module_state(rules[p])
+                _restore_module_state(rules[other], mod_states[other])
+                histories[p].append(copy.deepcopy(grids[p]))
+                hist_idxs[p] = len(histories[p]) - 1
+                if len(histories[p]) > max_history:
+                    histories[p].pop(0)
+                    hist_idxs[p] -= 1
+                stepped_any = True
+
+        time.sleep(min(delays[0], delays[1]))
+
+
 # --- Genetic Algorithm Rule Discovery ---
 
 import random as _random
@@ -7563,6 +8184,15 @@ def main():
         metavar="DIR",
         help="Output directory for rendered PNG frames (default: frames)",
     )
+    parser.add_argument(
+        "--compare",
+        nargs=2,
+        type=str,
+        default=None,
+        metavar=("RULE_L", "RULE_R"),
+        help="Split-screen comparison mode: run two rules side-by-side. "
+             "Example: --compare life highlife  or  --compare B36/S23 seeds",
+    )
     args = parser.parse_args()
 
     global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx, _fs_preset_idx, _sp_preset_idx, _dla_preset_idx, _ff_preset_idx
@@ -7618,6 +8248,74 @@ def main():
             curses.wrapper(lambda stdscr: run(stdscr, grid, args.speed, rule, None, script_engine))
         finally:
             pass
+        return
+
+    # Split-screen comparison mode
+    if args.compare is not None:
+        def _resolve_compare_rule(name):
+            if name.lower() in RULES:
+                return RULES[name.lower()]
+            try:
+                return parse_rule_string(name)
+            except ValueError as e:
+                parser.error(f"Invalid rule for --compare: {name} ({e})")
+
+        rule_l = _resolve_compare_rule(args.compare[0])
+        rule_r = _resolve_compare_rule(args.compare[1])
+
+        def _init_compare_grid(rule, r, c):
+            """Initialise a grid + module-level state for *rule* and return the grid."""
+            g = make_grid(r, c)
+            if _is_wireworld(rule):
+                place_wireworld_pattern(g, "ww_clock")
+            elif _is_grayscott(rule):
+                _gs_init(r, c)
+                g = _gs_to_grid(r, c)
+            elif _is_elementary(rule):
+                _eca_init(c)
+                g = _eca_to_grid(r, c)
+            elif _is_lenia(rule):
+                preset = LENIA_PRESETS[LENIA_PRESET_NAMES[_lenia_preset_idx]]
+                _lenia_init(r, c, preset.get("seed", "orbium"))
+                g = _lenia_to_grid(r, c)
+            elif _is_turmite(rule):
+                _turmite_init(r, c)
+                g = _turmite_to_grid(r, c)
+            elif _is_wator(rule):
+                _wator_init(r, c)
+                g = _wator_to_grid(r, c)
+            elif _is_fallingsand(rule):
+                _fs_init(r, c)
+                g = _fs_to_grid(r, c)
+            elif _is_physarum(rule):
+                _phys_init(r, c)
+                g = _phys_to_grid(r, c)
+            elif _is_sandpile(rule):
+                _sp_init(r, c)
+                g = _sp_to_grid(r, c)
+            elif _is_dla(rule):
+                _dla_init(r, c)
+                g = _dla_to_grid(r, c)
+            elif _is_forestfire(rule):
+                _ff_init(r, c)
+                g = _ff_to_grid(r, c)
+            elif _is_ising(rule):
+                _ising_init(r, c)
+                g = _ising_to_grid(r, c)
+            else:
+                place_pattern(g, args.pattern)
+            return g
+
+        # Init left pane, snapshot its module state, then init right pane.
+        grid_l = _init_compare_grid(rule_l, args.rows, args.cols)
+        state_l = _save_module_state(rule_l)
+        grid_r = _init_compare_grid(rule_r, args.rows, args.cols)
+        state_r = _save_module_state(rule_r)
+
+        curses.wrapper(lambda stdscr: run_split(
+            stdscr, grid_l, grid_r, args.speed, rule_l, rule_r,
+            init_mod_state_l=state_l, init_mod_state_r=state_r,
+        ))
         return
 
     # Resolve rule
