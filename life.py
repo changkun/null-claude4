@@ -1007,6 +1007,377 @@ def _step_wireworld_numpy(grid):
     return new.tolist()
 
 
+# --- HashLife Engine (Quadtree-memoized hypercomputation) ---
+
+
+class _HashLifeNode:
+    """Immutable quadtree node for HashLife.
+
+    Level 0: a single cell (0 or 1).
+    Level k >= 1: four children (nw, ne, sw, se), each level k-1.
+    Represents a 2^k × 2^k region.
+    """
+    __slots__ = ("nw", "ne", "sw", "se", "level", "population", "_hash")
+
+    def __init__(self, nw=None, ne=None, sw=None, se=None, level=0, population=0):
+        self.nw = nw
+        self.ne = ne
+        self.sw = sw
+        self.se = se
+        self.level = level
+        self.population = population
+        if level == 0:
+            self._hash = hash(population)
+        else:
+            self._hash = hash((id(nw), id(ne), id(sw), id(se)))
+
+    def __hash__(self):
+        return self._hash
+
+    def __eq__(self, other):
+        if self is other:
+            return True
+        if self.level != other.level:
+            return False
+        if self.level == 0:
+            return self.population == other.population
+        return (self.nw is other.nw and self.ne is other.ne and
+                self.sw is other.sw and self.se is other.se)
+
+
+class HashLifeEngine:
+    """HashLife engine — computes Life generations in O(log N) time via
+    quadtree memoization.  Can skip 2^(k-2) generations per step at level k.
+    """
+
+    def __init__(self):
+        # Canonical node cache: (nw, ne, sw, se) -> node  or  pop -> leaf
+        self._memo = {}
+        # Result cache: node -> result_node (center after 2^(k-2) gens)
+        self._result_cache = {}
+        # Pre-create canonical leaf nodes
+        self._dead = self._leaf(0)
+        self._alive = self._leaf(1)
+        self.root = None
+        self.generation = 0
+        # Offset: where grid (0,0) sits inside the quadtree
+        self._origin_row = 0
+        self._origin_col = 0
+        # Step size control: 0 = max speed (2^(k-2)), can be reduced
+        self._step_exponent = None  # None = max
+
+    def _leaf(self, pop):
+        """Return canonical level-0 node."""
+        key = ("leaf", pop)
+        if key in self._memo:
+            return self._memo[key]
+        n = _HashLifeNode(level=0, population=pop)
+        self._memo[key] = n
+        return n
+
+    def _node(self, nw, ne, sw, se):
+        """Return canonical internal node, creating if needed."""
+        key = (id(nw), id(ne), id(sw), id(se))
+        if key in self._memo:
+            return self._memo[key]
+        level = nw.level + 1
+        pop = nw.population + ne.population + sw.population + se.population
+        n = _HashLifeNode(nw, ne, sw, se, level, pop)
+        self._memo[key] = n
+        return n
+
+    def _empty_tree(self, level):
+        """Return a canonical empty (all-dead) tree at the given level."""
+        if level == 0:
+            return self._dead
+        sub = self._empty_tree(level - 1)
+        return self._node(sub, sub, sub, sub)
+
+    def _expand(self, node):
+        """Add a border of empty cells around the node (increase level by 1)."""
+        empty = self._empty_tree(node.level - 1)
+        return self._node(
+            self._node(empty, empty, empty, node.nw),
+            self._node(empty, empty, node.ne, empty),
+            self._node(empty, node.sw, empty, empty),
+            self._node(node.se, empty, empty, empty),
+        )
+
+    def _cell_value(self, node, row, col):
+        """Get cell value at (row, col) within node's 2^level grid."""
+        if node.level == 0:
+            return node.population
+        half = 1 << (node.level - 1)
+        if row < half:
+            if col < half:
+                return self._cell_value(node.nw, row, col)
+            else:
+                return self._cell_value(node.ne, row, col - half)
+        else:
+            if col < half:
+                return self._cell_value(node.sw, row - half, col)
+            else:
+                return self._cell_value(node.se, row - half, col - half)
+
+    def _set_cell(self, node, row, col, val):
+        """Return new node with cell at (row, col) set to val."""
+        if node.level == 0:
+            return self._leaf(val)
+        half = 1 << (node.level - 1)
+        if row < half:
+            if col < half:
+                return self._node(self._set_cell(node.nw, row, col, val),
+                                  node.ne, node.sw, node.se)
+            else:
+                return self._node(node.nw, self._set_cell(node.ne, row, col - half, val),
+                                  node.sw, node.se)
+        else:
+            if col < half:
+                return self._node(node.nw, node.ne,
+                                  self._set_cell(node.sw, row - half, col, val), node.se)
+            else:
+                return self._node(node.nw, node.ne, node.sw,
+                                  self._set_cell(node.se, row - half, col - half, val))
+
+    def _centred_sub(self, node):
+        """Return the centre half-size node (the inner 2^(k-1) region)."""
+        return self._node(node.nw.se, node.ne.sw, node.sw.ne, node.se.nw)
+
+    def _centred_horizontal(self, west, east):
+        """Return the centre of two horizontally adjacent nodes."""
+        return self._node(west.ne.se, east.nw.sw, west.se.ne, east.sw.nw)
+
+    def _centred_vertical(self, north, south):
+        """Return the centre of two vertically adjacent nodes."""
+        return self._node(north.sw.se, north.se.sw, south.nw.ne, south.ne.nw)
+
+    def _centred_sub_sub(self, node):
+        """Return the centre of the centre (inner quarter)."""
+        return self._node(node.nw.se.se, node.ne.sw.sw,
+                          node.sw.ne.ne, node.se.nw.nw)
+
+    def _slow_simulation(self, node):
+        """Base case: compute next generation for a 4x4 node (level 2).
+        Returns the 2x2 centre after 1 step."""
+        # Collect all 16 cells of the 4x4 grid
+        def get(n, r, c):
+            return self._cell_value(n, r, c)
+
+        # Build flat 4x4 grid
+        cells = [[0] * 4 for _ in range(4)]
+        for r in range(4):
+            for c in range(4):
+                cells[r][c] = get(node, r, c)
+
+        # Compute next state for 2x2 centre (rows 1-2, cols 1-2)
+        result = [[0, 0], [0, 0]]
+        for r in range(1, 3):
+            for c in range(1, 3):
+                count = 0
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        if dr == 0 and dc == 0:
+                            continue
+                        count += cells[r + dr][c + dc]
+                alive = cells[r][c]
+                if alive:
+                    result[r - 1][c - 1] = 1 if count in (2, 3) else 0
+                else:
+                    result[r - 1][c - 1] = 1 if count == 3 else 0
+
+        return self._node(
+            self._leaf(result[0][0]), self._leaf(result[0][1]),
+            self._leaf(result[1][0]), self._leaf(result[1][1]))
+
+    def _step_node(self, node):
+        """Recursively compute the result of a node.
+        For level k, returns centre 2^(k-1) region advanced by 2^step_exp gens.
+        """
+        if node in self._result_cache:
+            return self._result_cache[node]
+
+        if node.population == 0:
+            result = self._empty_tree(node.level - 1)
+            self._result_cache[node] = result
+            return result
+
+        if node.level == 2:
+            result = self._slow_simulation(node)
+            self._result_cache[node] = result
+            return result
+
+        fast = (self._step_exponent is None or
+                self._step_exponent >= node.level - 2)
+
+        if fast:
+            # Phase 1 (fast): advance children by 2^(k-3) gens first
+            n00 = self._step_node(node.nw)
+            n01 = self._step_node(self._node(
+                node.nw.ne, node.ne.nw, node.nw.se, node.ne.sw))
+            n02 = self._step_node(node.ne)
+            n10 = self._step_node(self._node(
+                node.nw.sw, node.nw.se, node.sw.nw, node.sw.ne))
+            n11 = self._step_node(self._node(
+                node.nw.se, node.ne.sw, node.sw.ne, node.se.nw))
+            n12 = self._step_node(self._node(
+                node.ne.sw, node.ne.se, node.se.nw, node.se.ne))
+            n20 = self._step_node(node.sw)
+            n21 = self._step_node(self._node(
+                node.sw.ne, node.se.nw, node.sw.se, node.se.sw))
+            n22 = self._step_node(node.se)
+        else:
+            # Phase 1 (slow): just extract centres, no advancement
+            n00 = self._centred_sub(node.nw)
+            n01 = self._centred_horizontal(node.nw, node.ne)
+            n02 = self._centred_sub(node.ne)
+            n10 = self._centred_vertical(node.nw, node.sw)
+            n11 = self._centred_sub_sub(node)
+            n12 = self._centred_vertical(node.ne, node.se)
+            n20 = self._centred_sub(node.sw)
+            n21 = self._centred_horizontal(node.sw, node.se)
+            n22 = self._centred_sub(node.se)
+
+        # Phase 2: advance the 4 overlapping sub-squares by 2^(k-3) gens
+        result = self._node(
+            self._step_node(self._node(n00, n01, n10, n11)),
+            self._step_node(self._node(n01, n02, n11, n12)),
+            self._step_node(self._node(n10, n11, n20, n21)),
+            self._step_node(self._node(n11, n12, n21, n22)))
+
+        self._result_cache[node] = result
+        return result
+
+    def _generations_per_step(self):
+        """How many generations the current step will advance."""
+        if self.root is None:
+            return 0
+        if self._step_exponent is not None:
+            return 1 << self._step_exponent
+        return 1 << (self.root.level - 2)
+
+    def from_grid(self, grid, rule):
+        """Import a 2D list grid into the quadtree. Only supports B3/S23 (Life)."""
+        self._memo.clear()
+        self._result_cache.clear()
+        self._dead = self._leaf(0)
+        self._alive = self._leaf(1)
+
+        rows = len(grid)
+        cols = len(grid[0]) if rows > 0 else 0
+
+        # Determine level needed: 2^level >= 2*max(rows, cols) to leave border room
+        size = max(rows, cols, 4) * 2
+        level = 2
+        while (1 << level) < size:
+            level += 1
+
+        # Center the grid within the tree
+        full_size = 1 << level
+        self._origin_row = (full_size - rows) // 2
+        self._origin_col = (full_size - cols) // 2
+
+        # Build tree from cells
+        self.root = self._empty_tree(level)
+        for r in range(rows):
+            for c in range(cols):
+                if grid[r][c] > 0:
+                    self.root = self._set_cell(self.root,
+                                               r + self._origin_row,
+                                               c + self._origin_col, 1)
+
+    def to_grid(self, rows, cols):
+        """Export the quadtree back to a 2D list grid (clipped to rows x cols).
+        Alive cells get age=1 (HashLife tracks only alive/dead)."""
+        grid = [[0] * cols for _ in range(rows)]
+        if self.root is None:
+            return grid
+        # Offset: tree position (or, oc) maps to grid (0, 0)
+        self._extract(self.root, -self._origin_row, -self._origin_col,
+                       grid, rows, cols)
+        return grid
+
+    def _extract(self, node, top, left, grid, rows, cols):
+        """Recursively extract cells from quadtree into grid.
+        top/left = position of this node's top-left corner in grid coordinates."""
+        if node.population == 0:
+            return
+        size = 1 << node.level
+        # Skip if entirely outside viewport
+        if top >= rows or left >= cols or top + size <= 0 or left + size <= 0:
+            return
+        if node.level == 0:
+            if 0 <= top < rows and 0 <= left < cols:
+                grid[top][left] = node.population
+            return
+        half = size >> 1
+        self._extract(node.nw, top, left, grid, rows, cols)
+        self._extract(node.ne, top, left + half, grid, rows, cols)
+        self._extract(node.sw, top + half, left, grid, rows, cols)
+        self._extract(node.se, top + half, left + half, grid, rows, cols)
+
+    def step(self):
+        """Advance the universe by 2^(k-2) generations (or less if throttled).
+        Returns the number of generations advanced."""
+        if self.root is None:
+            return 0
+
+        # Ensure root is large enough: need at least level 3, and pattern
+        # must not touch the border (expand if needed)
+        while self.root.level < 3:
+            self.root = self._expand(self.root)
+            pad = 1 << (self.root.level - 2)
+            self._origin_row += pad
+            self._origin_col += pad
+
+        # Expand if any border quadrant is non-empty to avoid clipping
+        while True:
+            nw, ne, sw, se = self.root.nw, self.root.ne, self.root.sw, self.root.se
+            border_pop = (nw.nw.population + nw.ne.population + nw.sw.population +
+                          ne.nw.population + ne.ne.population + ne.se.population +
+                          sw.nw.population + sw.sw.population + sw.se.population +
+                          se.ne.population + se.sw.population + se.se.population)
+            if border_pop == 0:
+                break
+            self.root = self._expand(self.root)
+            pad = 1 << (self.root.level - 2)
+            self._origin_row += pad
+            self._origin_col += pad
+
+        gens = self._generations_per_step()
+        # _step_node returns center (level-1), then expand restores level.
+        # Net effect on coordinates: _step_node shifts origin by -quarter,
+        # expand shifts it back by +quarter — so origin is unchanged.
+        self.root = self._step_node(self.root)
+        self.root = self._expand(self.root)
+        self.generation += gens
+        return gens
+
+    def set_step_exponent(self, exp):
+        """Set the step size to 2^exp generations. None = maximum."""
+        if exp is not None and exp < 0:
+            exp = 0
+        self._step_exponent = exp
+        # Clear result cache when step size changes
+        self._result_cache.clear()
+
+    def get_step_exponent(self):
+        return self._step_exponent
+
+    def get_max_exponent(self):
+        if self.root is None:
+            return 0
+        return max(0, self.root.level - 2)
+
+    def get_population(self):
+        if self.root is None:
+            return 0
+        return self.root.population
+
+    def clear_caches(self):
+        """Free memory by clearing memoization caches."""
+        self._result_cache.clear()
+
+
 def _age_color(age):
     """Return curses color pair number based on cell age."""
     if age <= 3:
@@ -2339,6 +2710,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
     max_history = 10000              # max stored generations
     browsing_history = False         # True when viewing a past state
 
+    # HashLife hyperspeed engine
+    hashlife = HashLifeEngine()
+    hashlife_active = False          # True when H key enables hyperspeed
+
     # Sound synthesis engine
     sound = SoundEngine()
 
@@ -2516,10 +2891,18 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
             pop_str = f" | Pop {pop}" if not show_stats else ""
             state_str = 'REWOUND' if browsing_history else ('PAUSED' if paused else 'Running')
             detect_str = " | DETECT" if detect_enabled else ""
-            engine_str = " | NumPy" if _HAS_NUMPY else ""
+            engine_str = " | NumPy" if (_HAS_NUMPY and not hashlife_active) else ""
             sound_str = " | SOUND" if sound.active else ""
             braille_str = " | BRAILLE" if braille_mode else ""
-            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
+            if hashlife_active:
+                hl_exp = hashlife.get_step_exponent()
+                if hl_exp is None:
+                    hl_exp = hashlife.get_max_exponent()
+                hl_gens = 1 << hl_exp if hl_exp >= 0 else 1
+                hashlife_str = f" | HASHLIFE 2^{hl_exp} ({hl_gens} gens/step) [<>]speed"
+            else:
+                hashlife_str = ""
+            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{hashlife_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
@@ -2982,6 +3365,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                                         rule_idx = -1
             elif key == ord("e"):
                 editing = False
+                if hashlife_active:
+                    hashlife.from_grid(grid, rule)
+                    hashlife.generation = generation
         else:
             # Normal-mode controls
             if key == ord(" ") and not browsing_history:
@@ -3002,6 +3388,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 hist_idx = 0
                 browsing_history = False
                 pop_history = []
+                hashlife_active = False
                 if mp:
                     network.send_grid_sync(grid, generation, rule)
             elif key == ord("R"):
@@ -3013,6 +3400,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     rule_idx = 0
                     rule = RULES[RULE_NAMES[0]]
                 new_ww = _is_wireworld(rule)
+                if new_ww:
+                    hashlife_active = False
                 if was_ww != new_ww:
                     for r2 in range(rows):
                         for c2 in range(cols):
@@ -3024,6 +3413,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     hist_idx = 0
                     browsing_history = False
                     pop_history = []
+                if hashlife_active:
+                    # Re-sync HashLife with new rule
+                    hashlife.from_grid(grid, rule)
+                    hashlife.generation = generation
                 if mp:
                     network.send_rule_change(rule, rule_idx)
             elif key == ord("n") and (paused or browsing_history):
@@ -3034,12 +3427,20 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     grid = copy.deepcopy(history[hist_idx])
                     browsing_history = False
                     pop_history = [_count_population(h) for h in history[-max_pop_history:]]
-                custom_grid = se.custom_step(grid)
-                if custom_grid is not None:
-                    grid = custom_grid
+                if hashlife_active:
+                    hashlife.from_grid(grid, rule)
+                    hashlife.generation = generation
+                    hashlife.set_step_exponent(0)  # single step = 1 gen
+                    hashlife.step()
+                    generation = hashlife.generation
+                    grid = hashlife.to_grid(rows, cols)
                 else:
-                    grid = step(grid, rule)
-                generation += 1
+                    custom_grid = se.custom_step(grid)
+                    if custom_grid is not None:
+                        grid = custom_grid
+                    else:
+                        grid = step(grid, rule)
+                    generation += 1
                 se.bind_grid(grid)
                 se.run_step_callback(generation, _count_population(grid))
                 history.append(copy.deepcopy(grid))
@@ -3091,6 +3492,43 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     stdscr.nodelay(True)
             elif key == ord("B"):
                 braille_mode = not braille_mode
+            elif key == ord("H"):
+                # Toggle HashLife hyperspeed mode (only for Life-like B/S rules)
+                if not ww and not se.custom_rule_fn:
+                    if not hashlife_active:
+                        # Activate: import grid into quadtree
+                        hashlife = HashLifeEngine()
+                        hashlife.from_grid(grid, rule)
+                        hashlife.generation = generation
+                        hashlife.set_step_exponent(0)  # Start at 1 gen/step
+                        hashlife_active = True
+                    else:
+                        # Deactivate: export quadtree back to grid
+                        grid = hashlife.to_grid(rows, cols)
+                        generation = hashlife.generation
+                        hashlife_active = False
+                        # Reset history from current state
+                        history = [copy.deepcopy(grid)]
+                        hist_idx = 0
+                        browsing_history = False
+            elif key == ord("<") and hashlife_active:
+                # Decrease HashLife step size
+                exp = hashlife.get_step_exponent()
+                if exp is None:
+                    exp = hashlife.get_max_exponent()
+                if exp > 0:
+                    hashlife.set_step_exponent(exp - 1)
+            elif key == ord(">") and hashlife_active:
+                # Increase HashLife step size
+                exp = hashlife.get_step_exponent()
+                if exp is None:
+                    exp = hashlife.get_max_exponent()
+                else:
+                    max_exp = hashlife.get_max_exponent()
+                    if exp < max_exp:
+                        hashlife.set_step_exponent(exp + 1)
+                    else:
+                        hashlife.set_step_exponent(None)  # Max speed
             elif key == ord("G"):
                 # Export history as animated GIF
                 if len(history) > 1:
@@ -3203,6 +3641,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 paused = False
                 # Rebuild pop_history up to this point
                 pop_history = [_count_population(h) for h in history[-max_pop_history:]]
+                if hashlife_active:
+                    hashlife.from_grid(grid, rule)
+                    hashlife.generation = generation
 
         # Multiplayer: send cursor position (throttled)
         if mp and network.connected and editing:
@@ -3214,20 +3655,35 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         if not paused and not editing and not browsing_history:
             # In multiplayer, only the host drives simulation
             if not mp or network.is_host:
-                # Use custom rule from script engine if available
-                custom_grid = se.custom_step(grid)
-                if custom_grid is not None:
-                    grid = custom_grid
+                if hashlife_active:
+                    # HashLife hyperspeed step
+                    gens_advanced = hashlife.step()
+                    generation = hashlife.generation
+                    grid = hashlife.to_grid(rows, cols)
+                    se.bind_grid(grid)
+                    se.run_step_callback(generation, hashlife.get_population())
+                    # Don't store every frame in history during hyperspeed
+                    if len(history) == 0 or gens_advanced <= 1:
+                        history.append(copy.deepcopy(grid))
+                        hist_idx = len(history) - 1
+                        if len(history) > max_history:
+                            history.pop(0)
+                            hist_idx -= 1
                 else:
-                    grid = step(grid, rule)
-                generation += 1
-                se.bind_grid(grid)
-                se.run_step_callback(generation, _count_population(grid))
-                history.append(copy.deepcopy(grid))
-                hist_idx = len(history) - 1
-                if len(history) > max_history:
-                    history.pop(0)
-                    hist_idx -= 1
+                    # Use custom rule from script engine if available
+                    custom_grid = se.custom_step(grid)
+                    if custom_grid is not None:
+                        grid = custom_grid
+                    else:
+                        grid = step(grid, rule)
+                    generation += 1
+                    se.bind_grid(grid)
+                    se.run_step_callback(generation, _count_population(grid))
+                    history.append(copy.deepcopy(grid))
+                    hist_idx = len(history) - 1
+                    if len(history) > max_history:
+                        history.pop(0)
+                        hist_idx -= 1
                 if mp and network.connected:
                     network.send_step(grid, generation)
 

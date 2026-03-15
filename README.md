@@ -60,6 +60,8 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `d`       | Toggle pattern detection overlay  |
 | `S`       | Toggle sound synthesis            |
 | `B`       | Toggle Braille high-density rendering |
+| `H`       | Toggle HashLife hyperspeed mode   |
+| `<` / `>` | Decrease / increase HashLife step exponent |
 | `G`       | Export history as animated GIF    |
 | `L`       | Load and run a script             |
 | `[`       | Rewind one generation (auto-pauses) |
@@ -449,6 +451,39 @@ This makes large-scale patterns — Gosper guns, pulsars, Wireworld circuits —
 - **Color preservation** — each Braille cell picks its curses color via majority vote of the non-dead cells in its 2×4 block, preserving the age-based color gradient and Wireworld state colors.
 - **Automatic fallback** — entering editor mode temporarily switches back to classic rendering (since editing requires per-cell precision), and Braille resumes when you exit the editor.
 - **Status bar** — shows a `BRAILLE` indicator when active.
+
+## HashLife Hyperspeed Mode
+
+Press `H` to activate HashLife — a quadtree-memoized algorithm that can skip exponentially many generations in near-constant time. Instead of computing each generation cell-by-cell, HashLife represents the grid as a recursive quadtree where identical sub-patterns share the same node, and memoizes the future of every sub-pattern it has ever seen. For structured patterns like Gosper guns, this means millions or billions of generations can be computed in milliseconds.
+
+### How it works
+
+1. **Quadtree representation** — the grid is stored as a tree of `_HashLifeNode` objects. Level 0 = single cell, level k = 2^k × 2^k region. Identical sub-trees are canonicalized so they share a single node in memory.
+2. **Result memoization** — `_step_node()` recursively computes the center half of a node advanced by 2^(k-2) generations, caching the result. The second time the same sub-pattern appears, the answer is instant.
+3. **Exponential time leaps** — at level k, a single `step()` call advances by 2^(k-2) generations. The tree automatically expands when the pattern reaches its border, so unbounded growth is supported.
+
+### Controls
+
+| Key       | Action                                        |
+|-----------|-----------------------------------------------|
+| `H`       | Toggle HashLife on/off                        |
+| `<`       | Decrease step exponent (slower, finer-grained)|
+| `>`       | Increase step exponent (faster, bigger leaps) |
+| `n`       | Single-step (1 generation) while paused       |
+
+The status bar shows `HASHLIFE 2^N (M gens/step) [<>]speed` when active. The generation counter visibly rockets upward as the algorithm exploits pattern repetition.
+
+### Limitations
+
+- **Life-like rules only** — HashLife implements standard B3/S23 (Conway's Life). It automatically disables when switching to Wireworld or custom script rules.
+- **No cell aging** — the quadtree tracks only alive/dead state, so exported grids show age=1 for all live cells.
+- **Memory trade-off** — the canonical node cache and result cache grow with pattern complexity. Caches are cleared on rule changes and when toggling the mode off.
+
+### Integration
+
+- Toggling `H` imports the current grid into the quadtree engine and exports it back when deactivated.
+- Editor changes, rule switches, randomization, and history forks automatically re-sync or deactivate HashLife.
+- History recording is throttled during hyperspeed (only the latest frame is stored per step) to avoid filling the 10,000-generation buffer instantly.
 
 ## Design Notes
 
