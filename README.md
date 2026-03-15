@@ -1,6 +1,6 @@
 # Cellular Automaton — Terminal Simulator
 
-A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, the **Ising Model** statistical mechanics spin simulation, the **Cyclic Cellular Automaton** (CCA) spiral wave generator, the **Chimera Grid** multi-rule coexistence mode, a **split-screen comparison mode** for watching two simulations side-by-side, and supports arbitrary rules via B/S notation.
+A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, the **Ising Model** statistical mechanics spin simulation, the **Cyclic Cellular Automaton** (CCA) spiral wave generator, the **Chimera Grid** multi-rule coexistence mode, **Particle Life** emergent multi-species particle interactions, a **split-screen comparison mode** for watching two simulations side-by-side, and supports arbitrary rules via B/S notation.
 
 ## Usage
 
@@ -47,6 +47,9 @@ python3 life.py --rule cca --cca-preset turbulent              # fast 5-state ch
 python3 life.py --rule chimera                                    # Chimera Grid (Life vs HighLife)
 python3 life.py --rule chimera --chimera-preset quad-mix          # four rulesets in quadrants
 python3 life.py --rule chimera --chimera-preset diagonal-clash    # diagonal Life vs Diamoeba
+python3 life.py --rule particlelife                                 # Particle Life (primordial soup)
+python3 life.py --rule particlelife --particlelife-preset clusters   # sticky attraction clusters
+python3 life.py --rule particlelife --particlelife-preset orbits     # asymmetric orbital dance
 python3 life.py --script probabilistic_life        # run a user script on startup
 python3 life.py --script ~/my_script.py            # run a script from a file path
 python3 life.py --compare life highlife              # split-screen: Life vs HighLife
@@ -67,7 +70,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--speed`   | 0.1       | Delay between generations (seconds)  |
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
 | `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
-| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, `sandpile`, `dla`, `forestfire`, `ising`, `cca`, `chimera`, or B/S notation (e.g. `B36/S23`) |
+| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, `sandpile`, `dla`, `forestfire`, `ising`, `cca`, `chimera`, `particlelife`, or B/S notation (e.g. `B36/S23`) |
 | `--gs-preset` | `mitosis` | Gray-Scott parameter preset (`mitosis`, `coral`, `solitons`, `maze`, `spots`, `worms`, `waves`, `bubbles`) |
 | `--lenia-preset` | `orbium` | Lenia species preset (`orbium`, `geminium`, `scutium`, `hydrogeminium`, `wanderer`, `smooth_life`) |
 | `--eca-rule` | 30        | Wolfram rule number (0–255) for Elementary CA mode |
@@ -81,6 +84,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--ising-preset` | `critical` | Ising Model preset (`critical`, `cold`, `hot`, `quench`, `ordered`) |
 | `--cca-preset` | `classic` | Cyclic CA preset (`classic`, `sparse`, `von-neumann`, `rainbow`, `turbulent`) |
 | `--chimera-preset` | `life-vs-highlife` | Chimera Grid preset (`life-vs-highlife`, `life-vs-seeds`, `quad-mix`, `stripes-3`, `diagonal-clash`) |
+| `--particlelife-preset` | `primordial` | Particle Life preset (`primordial`, `clusters`, `orbits`, `swarm`, `chains`) |
 | `--script`  | —         | Run a Python script on startup (path or name from `~/.life-scripts/`) |
 | `--discover` | off      | Launch genetic algorithm rule discovery mode |
 | `--ga-generations` | 50 | Number of GA generations in discovery mode |
@@ -110,7 +114,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `B`       | Toggle Braille high-density rendering |
 | `T`       | Cycle topology (Torus → Klein Bottle → Möbius Strip → Bounded) |
 | `H`       | Toggle HashLife hyperspeed mode   |
-| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode; cycle Physarum presets in Physarum mode; cycle Sandpile presets in Sandpile mode; cycle DLA presets in DLA mode; cycle Forest Fire presets in Forest Fire mode; cycle Ising presets in Ising mode; cycle CCA presets in Cyclic CA mode |
+| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode; cycle Physarum presets in Physarum mode; cycle Sandpile presets in Sandpile mode; cycle DLA presets in DLA mode; cycle Forest Fire presets in Forest Fire mode; cycle Ising presets in Ising mode; cycle CCA presets in Cyclic CA mode; cycle Particle Life presets in Particle Life mode |
 | `t` / `y` | Decrease / increase temperature in Ising Model mode |
 | `W`       | Enter a specific Wolfram rule number (0–255) in Elementary CA mode |
 | `G`       | Export history as animated GIF    |
@@ -200,6 +204,7 @@ All rules use Birth/Survival notation — a cell is born if it has exactly B nei
 | `physarum`   | *(chemotaxis)* | Slime mold transport networks — see [Physarum](#physarum-slime-mold-transport-network) below |
 | `sandpile`   | *(self-organized criticality)* | Abelian Sandpile — see [Sandpile](#abelian-sandpile) below |
 | `chimera`    | *(multi-rule zones)* | Multiple B/S rules on one grid — see [Chimera Grid](#chimera-grid--multi-rule-coexistence) below |
+| `particlelife` | *(continuous particles)* | Multi-species particle interactions — see [Particle Life](#particle-life--primordial-soup) below |
 
 Use `--rule <preset>` or `--rule B.../S...` for custom rules. Press `R` at runtime to cycle through presets.
 
@@ -788,6 +793,68 @@ This reuses the entire existing B/S rule infrastructure without duplication.
 - **Randomize** (`r`) — re-initializes with the current preset at ~25% density.
 - **Status bar** — shows the current preset description.
 
+## Particle Life — Primordial Soup
+
+Particle Life is a continuous particle-based simulation where multiple species of particles attract and repel each other based on a randomized interaction matrix. Unlike every other mode in this simulator, it is **not grid-based** — particles have floating-point positions and velocities in a toroidal world, and the display grid is a density projection. The emergent behaviors — clusters, orbits, chains, and self-organizing life-like structures — arise purely from simple pairwise force rules applied to hundreds of particles.
+
+Each species pair (i, j) has a force coefficient in [-1, 1]: positive means attraction, negative means repulsion. The force kernel is piecewise linear with short-range repulsion (preventing particles from collapsing onto each other) and medium-range attraction/repulsion (determined by the interaction matrix), creating stable equilibrium distances.
+
+### Starting Particle Life
+
+```bash
+python3 life.py --rule particlelife                                 # random primordial soup
+python3 life.py --rule particlelife --particlelife-preset clusters   # sticky attraction clusters
+python3 life.py --rule particlelife --particlelife-preset orbits     # asymmetric orbital motion
+python3 life.py --rule particlelife --particlelife-preset swarm      # high particle count swarm
+python3 life.py --rule particlelife --particlelife-preset chains     # cyclic species chain formation
+```
+
+### Presets
+
+| Preset | Particles | Species | Description |
+|--------|-----------|---------|-------------|
+| `primordial` | 400 | 6 | Fully random interaction matrix — classic primordial soup with unpredictable emergent structures |
+| `clusters` | 500 | 4 | Attraction-biased matrix — particles form sticky clusters and blobs |
+| `orbits` | 350 | 3 | Antisymmetric forces — species orbit each other in dynamic loops |
+| `swarm` | 600 | 5 | High particle count with moderate friction — flocking and swarm behaviors |
+| `chains` | 300 | 4 | Each species attracts the next in a cycle — produces chain and ring formations |
+
+### Force Model
+
+The force between two particles at distance *r* uses a piecewise linear kernel with two zones:
+
+- **Repulsion zone** (r < 0.3 × r_max) — prevents particle overlap, creating a minimum separation distance
+- **Attraction/repulsion zone** (0.3 × r_max < r < r_max) — magnitude and sign determined by the interaction matrix coefficient for the two species involved
+
+Each preset configures the interaction radius (r_max), friction (velocity damping per tick), and force scale, producing distinctly different dynamics.
+
+### Rendering
+
+Each species is rendered in a distinct color:
+
+| Species | Color |
+|---------|-------|
+| 0 | Green |
+| 1 | Cyan |
+| 2 | Magenta |
+| 3 | Yellow |
+| 4 | Red |
+| 5 | Blue |
+
+Particles are projected onto the display grid as solid blocks (`██`). Braille high-density rendering is fully supported with species-aware coloring.
+
+### Implementation
+
+- **Pure Python engine** — O(n²) pairwise force computation with toroidal distance wrapping
+- **NumPy vectorized engine** — fully broadcast pairwise computation using NumPy arrays, automatically used when NumPy is available
+- **World coordinates** — each grid cell maps to 4×4 world units for sub-cell resolution
+
+### Interactions
+
+- **HashLife** — incompatible (continuous particles, not grid cells). Switching to Particle Life auto-deactivates HashLife.
+- **Split-screen** — fully supported. Full particle state is saved/restored for independent pane simulation.
+- **Randomize** (`r`) — re-scatters all particles and generates a new interaction matrix.
+
 ## Population Statistics Dashboard
 
 Press `g` to toggle a 35-column side panel that provides real-time population analytics:
@@ -1135,7 +1202,7 @@ Press `Tab` to switch which pane receives input. The active pane is marked with 
 
 Each pane maintains a fully independent simulation state. Before stepping a pane's simulation forward, the engine saves the other pane's module-level globals and restores the current pane's — this allows specialized modes that rely on module state (Gray-Scott concentrations, Wa-Tor population grids, Ising spin lattices, Physarum trail maps, etc.) to coexist without cross-contamination.
 
-All 20+ simulation modes are supported, and you can mix any two freely — compare a B/S cellular automaton against a continuous reaction-diffusion system, watch two Ising models at different temperatures, or pit two Chimera Grid presets against each other.
+All 24+ simulation modes are supported, and you can mix any two freely — compare a B/S cellular automaton against a continuous reaction-diffusion system, watch two Ising models at different temperatures, or pit two Chimera Grid presets against each other.
 
 ## Design Notes
 

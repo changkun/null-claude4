@@ -50,6 +50,7 @@ RULES = {
     "ising": {"b": set(), "s": set(), "name": "Ising Model (critical)", "ising": True},
     "cca": {"b": set(), "s": set(), "name": "Cyclic CA (14-state)", "cca": True},
     "chimera": {"b": set(), "s": set(), "name": "Chimera Grid (Life|HighLife)", "chimera": True},
+    "particlelife": {"b": set(), "s": set(), "name": "Particle Life (Primordial Soup)", "particlelife": True},
 }
 
 RULE_NAMES = list(RULES.keys())
@@ -190,6 +191,11 @@ def _is_cca(rule):
 def _is_chimera(rule):
     """Check if the current rule is the Chimera Grid multi-rule automaton."""
     return rule.get("chimera", False)
+
+
+def _is_particlelife(rule):
+    """Check if the current rule is the Particle Life simulation."""
+    return rule.get("particlelife", False)
 
 
 # --- Wa-Tor Predator-Prey Ecosystem ---
@@ -2880,6 +2886,331 @@ def _chimera_color(val, zone_id):
     return zone_colors[zone_id % len(zone_colors)]
 
 
+# --- Particle Life ("Primordial Soup") ---
+# Multiple species of particles attract and repel each other based on a
+# randomized interaction matrix.  Each species pair (i, j) has a force
+# coefficient in [-1, 1]: positive = attraction, negative = repulsion.
+# Particles within a radius r_max exert forces on each other, producing
+# emergent clusters, orbits, chains, and self-organizing life-like structures.
+# Unlike grid-based automata, this is continuous: particles have float
+# positions and velocities, and the display grid is a density projection.
+
+PARTICLELIFE_PRESETS = {
+    "primordial": {
+        "name": "Primordial Soup",
+        "n_species": 6,
+        "n_particles": 400,
+        "r_max": 80.0,
+        "friction": 0.05,
+        "force_scale": 0.5,
+        "seed": None,
+    },
+    "clusters": {
+        "name": "Sticky Clusters",
+        "n_species": 4,
+        "n_particles": 500,
+        "r_max": 60.0,
+        "friction": 0.1,
+        "force_scale": 0.8,
+        "seed": "attract",
+    },
+    "orbits": {
+        "name": "Orbital Dance",
+        "n_species": 3,
+        "n_particles": 350,
+        "r_max": 100.0,
+        "friction": 0.02,
+        "force_scale": 0.4,
+        "seed": "asymmetric",
+    },
+    "swarm": {
+        "name": "Swarm Intelligence",
+        "n_species": 5,
+        "n_particles": 600,
+        "r_max": 70.0,
+        "friction": 0.08,
+        "force_scale": 0.6,
+        "seed": None,
+    },
+    "chains": {
+        "name": "Chain Formation",
+        "n_species": 4,
+        "n_particles": 300,
+        "r_max": 90.0,
+        "friction": 0.03,
+        "force_scale": 0.35,
+        "seed": "chain",
+    },
+}
+
+PARTICLELIFE_PRESET_NAMES = list(PARTICLELIFE_PRESETS.keys())
+
+# Module-level Particle Life state
+_pl_x = None            # 1D array of particle x-positions (float, world coords)
+_pl_y = None            # 1D array of particle y-positions (float, world coords)
+_pl_vx = None           # 1D array of particle x-velocities
+_pl_vy = None           # 1D array of particle y-velocities
+_pl_species = None      # 1D array of species index per particle
+_pl_matrix = None       # n_species x n_species interaction matrix
+_pl_n_species = 6
+_pl_n_particles = 400
+_pl_r_max = 80.0
+_pl_friction = 0.05
+_pl_force_scale = 0.5
+_pl_world_w = 0.0       # world width (= cols * scale for sub-cell resolution)
+_pl_world_h = 0.0       # world height
+_pl_rows = 0
+_pl_cols = 0
+_pl_preset_idx = 0
+
+
+def _pl_build_matrix(n_species, seed=None):
+    """Build a randomized interaction matrix for *n_species* species.
+
+    Returns an n×n list-of-lists where matrix[i][j] is the force that
+    species j exerts on species i, in range [-1, 1].
+    """
+    import random as _rng
+    if seed == "attract":
+        # Bias toward attraction — produces sticky clusters
+        return [[_rng.uniform(-0.3, 1.0) for _ in range(n_species)]
+                for _ in range(n_species)]
+    elif seed == "asymmetric":
+        # Strongly asymmetric — produces orbital behaviors
+        m = [[_rng.uniform(-1.0, 1.0) for _ in range(n_species)]
+             for _ in range(n_species)]
+        for i in range(n_species):
+            for j in range(i + 1, n_species):
+                m[j][i] = -m[i][j]  # antisymmetric pairs
+        return m
+    elif seed == "chain":
+        # Each species attracts the next and repels others
+        m = [[-0.5] * n_species for _ in range(n_species)]
+        for i in range(n_species):
+            m[i][i] = _rng.uniform(-0.1, 0.1)  # neutral to self
+            m[i][(i + 1) % n_species] = _rng.uniform(0.5, 1.0)  # attract next
+        return m
+    else:
+        # Fully random — the classic primordial soup
+        return [[_rng.uniform(-1.0, 1.0) for _ in range(n_species)]
+                for _ in range(n_species)]
+
+
+def _pl_init(rows, cols, preset_name=None):
+    """Initialize Particle Life with random positions and interaction matrix."""
+    global _pl_x, _pl_y, _pl_vx, _pl_vy, _pl_species, _pl_matrix
+    global _pl_n_species, _pl_n_particles, _pl_r_max, _pl_friction, _pl_force_scale
+    global _pl_world_w, _pl_world_h, _pl_rows, _pl_cols, _pl_preset_idx
+    import random as _rng
+
+    _pl_rows, _pl_cols = rows, cols
+    # World coordinates: each grid cell = 4 world units for sub-cell resolution
+    _pl_world_w = cols * 4.0
+    _pl_world_h = rows * 4.0
+
+    if preset_name is None:
+        preset_name = PARTICLELIFE_PRESET_NAMES[_pl_preset_idx]
+    elif preset_name in PARTICLELIFE_PRESETS:
+        _pl_preset_idx = PARTICLELIFE_PRESET_NAMES.index(preset_name)
+
+    preset = PARTICLELIFE_PRESETS[preset_name]
+    _pl_n_species = preset["n_species"]
+    _pl_n_particles = preset["n_particles"]
+    _pl_r_max = preset["r_max"]
+    _pl_friction = preset["friction"]
+    _pl_force_scale = preset["force_scale"]
+
+    _pl_matrix = _pl_build_matrix(_pl_n_species, preset.get("seed"))
+
+    # Scatter particles randomly in world space
+    _pl_x = [_rng.uniform(0, _pl_world_w) for _ in range(_pl_n_particles)]
+    _pl_y = [_rng.uniform(0, _pl_world_h) for _ in range(_pl_n_particles)]
+    _pl_vx = [0.0] * _pl_n_particles
+    _pl_vy = [0.0] * _pl_n_particles
+    _pl_species = [_rng.randint(0, _pl_n_species - 1) for _ in range(_pl_n_particles)]
+
+
+def _pl_force(r, r_max):
+    """Compute the force magnitude at distance r.
+
+    Uses a piecewise linear kernel:
+      - Repulsion zone: r < beta * r_max → ramps from 0 at r=0 to -1 at peak, back to 0
+      - Attraction zone: beta * r_max < r < r_max → ramps 0 → f → 0
+    This creates a stable equilibrium distance.
+    """
+    beta = 0.3  # ratio of repulsion radius to r_max
+    if r < beta * r_max:
+        # Short-range repulsion: linear ramp up then down
+        return r / (beta * r_max) - 1.0
+    elif r < r_max:
+        # Attraction zone: triangle pulse
+        mid = (beta * r_max + r_max) * 0.5
+        if r < mid:
+            return (r - beta * r_max) / (mid - beta * r_max)
+        else:
+            return (r_max - r) / (r_max - mid)
+    return 0.0
+
+
+def _pl_step():
+    """Advance the Particle Life simulation by one tick."""
+    global _pl_x, _pl_y, _pl_vx, _pl_vy
+    n = _pl_n_particles
+    w, h = _pl_world_w, _pl_world_h
+    half_w, half_h = w * 0.5, h * 0.5
+    r_max = _pl_r_max
+    r_max_sq = r_max * r_max
+    dt = 1.0
+    fric = 1.0 - _pl_friction
+    fscale = _pl_force_scale
+
+    # Accumulate forces
+    fx = [0.0] * n
+    fy = [0.0] * n
+
+    for i in range(n):
+        xi, yi = _pl_x[i], _pl_y[i]
+        si = _pl_species[i]
+        for j in range(i + 1, n):
+            dx = _pl_x[j] - xi
+            dy = _pl_y[j] - yi
+            # Toroidal wrapping — use shortest path
+            if dx > half_w:
+                dx -= w
+            elif dx < -half_w:
+                dx += w
+            if dy > half_h:
+                dy -= h
+            elif dy < -half_h:
+                dy += h
+            dsq = dx * dx + dy * dy
+            if dsq < 1e-6 or dsq > r_max_sq:
+                continue
+            dist = math.sqrt(dsq)
+            sj = _pl_species[j]
+            # Force from j on i (based on matrix[si][sj])
+            f_ij = _pl_force(dist, r_max) * _pl_matrix[si][sj] * fscale
+            # Force from i on j (based on matrix[sj][si])
+            f_ji = _pl_force(dist, r_max) * _pl_matrix[sj][si] * fscale
+            # Normalized direction
+            inv_d = 1.0 / dist
+            nx_d = dx * inv_d
+            ny_d = dy * inv_d
+            fx[i] += f_ij * nx_d
+            fy[i] += f_ij * ny_d
+            fx[j] -= f_ji * nx_d
+            fy[j] -= f_ji * ny_d
+
+    # Update velocities and positions
+    for i in range(n):
+        _pl_vx[i] = (_pl_vx[i] + fx[i] * dt) * fric
+        _pl_vy[i] = (_pl_vy[i] + fy[i] * dt) * fric
+        _pl_x[i] = (_pl_x[i] + _pl_vx[i] * dt) % w
+        _pl_y[i] = (_pl_y[i] + _pl_vy[i] * dt) % h
+
+
+def _pl_step_numpy():
+    """Vectorized Particle Life step using NumPy."""
+    global _pl_x, _pl_y, _pl_vx, _pl_vy
+    n = _pl_n_particles
+    w, h = _pl_world_w, _pl_world_h
+    r_max = _pl_r_max
+    beta = 0.3
+    fscale = _pl_force_scale
+    fric = 1.0 - _pl_friction
+
+    x = np.array(_pl_x)
+    y = np.array(_pl_y)
+    vx = np.array(_pl_vx)
+    vy = np.array(_pl_vy)
+    species = np.array(_pl_species)
+
+    # Pairwise differences with toroidal wrapping
+    dx = x[np.newaxis, :] - x[:, np.newaxis]  # dx[i,j] = x[j] - x[i]
+    dy = y[np.newaxis, :] - y[:, np.newaxis]
+    dx = np.where(dx > w * 0.5, dx - w, np.where(dx < -w * 0.5, dx + w, dx))
+    dy = np.where(dy > h * 0.5, dy - h, np.where(dy < -h * 0.5, dy + h, dy))
+
+    dist = np.sqrt(dx * dx + dy * dy)
+    dist = np.where(dist < 1e-6, 1e-6, dist)  # avoid division by zero
+
+    # Piecewise linear force kernel
+    beta_r = beta * r_max
+    mid = (beta_r + r_max) * 0.5
+    force = np.zeros_like(dist)
+    # Repulsion zone
+    mask1 = dist < beta_r
+    force = np.where(mask1, dist / beta_r - 1.0, force)
+    # Attraction zone — first half
+    mask2 = (dist >= beta_r) & (dist < mid)
+    force = np.where(mask2, (dist - beta_r) / (mid - beta_r), force)
+    # Attraction zone — second half
+    mask3 = (dist >= mid) & (dist < r_max)
+    force = np.where(mask3, (r_max - dist) / (r_max - mid), force)
+
+    # Build interaction coefficient matrix from species
+    # coeff[i,j] = _pl_matrix[species[i]][species[j]]
+    mat = np.array(_pl_matrix)
+    coeff = mat[species][:, species]  # shape (n, n)
+    force = force * coeff * fscale
+
+    # Normalized direction
+    inv_d = 1.0 / dist
+    nx_d = dx * inv_d
+    ny_d = dy * inv_d
+
+    # Sum forces on each particle (force[i,j] acts on i from j)
+    total_fx = np.sum(force * nx_d, axis=1)
+    total_fy = np.sum(force * ny_d, axis=1)
+
+    vx = (vx + total_fx) * fric
+    vy = (vy + total_fy) * fric
+    x = (x + vx) % w
+    y = (y + vy) % h
+
+    _pl_x = x.tolist()
+    _pl_y = y.tolist()
+    _pl_vx = vx.tolist()
+    _pl_vy = vy.tolist()
+
+
+def _pl_to_grid(rows, cols):
+    """Project particles onto a 2D grid for display.
+
+    Each cell value encodes species + 1 (1-based) so the renderer can
+    color by species.  Density is represented by intensity (higher value
+    = more particles in that cell).
+    """
+    grid = [[0] * cols for _ in range(rows)]
+    scale_x = cols * 4.0  # world width
+    scale_y = rows * 4.0  # world height
+    for i in range(_pl_n_particles):
+        gc = int(_pl_x[i] / scale_x * cols) % cols
+        gr = int(_pl_y[i] / scale_y * rows) % rows
+        # Encode species: species 0 → values 1-19, species 1 → 20-38, etc.
+        # Simpler: use species * 15 + density (capped at 100)
+        cur = grid[gr][gc]
+        sp = _pl_species[i]
+        val = sp * 15 + 10
+        if cur == 0 or val > cur:
+            grid[gr][gc] = min(val, 100)
+    return grid
+
+
+def _pl_color(val):
+    """Map a particle life grid value to a curses color pair.
+
+    Species are distinguished by color:
+      species 0 → green (1), species 1 → cyan (5), species 2 → magenta (7),
+      species 3 → yellow (15), species 4 → red (21), species 5 → blue (6).
+    """
+    if val <= 0:
+        return 1
+    sp = max(0, (val - 10) // 15)
+    species_colors = [1, 5, 7, 15, 21, 6]
+    return species_colors[sp % len(species_colors)]
+
+
 def parse_rule_string(rule_str):
     """Parse a rule string like 'B36/S23' into birth/survival sets."""
     rule_str = rule_str.upper().replace(" ", "")
@@ -3720,6 +4051,13 @@ def place_pattern(grid, name, row_off=None, col_off=None):
 def step(grid, rule=None):
     if rule is None:
         rule = RULES["life"]
+    if _is_particlelife(rule):
+        rows, cols = len(grid), len(grid[0])
+        if _HAS_NUMPY:
+            _pl_step_numpy()
+        else:
+            _pl_step()
+        return _pl_to_grid(rows, cols)
     if _is_chimera(rule):
         rows, cols = len(grid), len(grid[0])
         _chimera_step()
@@ -4349,7 +4687,7 @@ def _render_braille_grid(grid, rows, cols, term_rows, term_cols):
     return lines
 
 
-def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=False, wator=False, fallingsand=False, sandpile=False, dla=False):
+def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=False, wator=False, fallingsand=False, sandpile=False, dla=False, particlelife=False):
     """Pick the curses color pair for a Braille cell based on majority vote.
 
     Examines the 2×4 block of grid cells that map to terminal position (tr, tc)
@@ -4365,6 +4703,10 @@ def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=Fals
                 if gs:
                     cp = _grayscott_color(age)
                     counts[cp] = counts.get(cp, 0) + 1
+                elif particlelife:
+                    if age:
+                        cp = _pl_color(age)
+                        counts[cp] = counts.get(cp, 0) + 1
                 elif dla:
                     if age:
                         cp = _dla_color(age)
@@ -5761,6 +6103,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         ising = _is_ising(rule)
         cca = _is_cca(rule)
         chimera = _is_chimera(rule)
+        particlelife = _is_particlelife(rule)
 
         # Track population
         pop = _count_population(grid)
@@ -5829,7 +6172,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     ch = braille_lines[tr][tc]
                     if ch == chr(_BRAILLE_BASE):
                         continue  # empty — skip for speed
-                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia or physarum, turmite=turmite, wator=wator, fallingsand=fallingsand, sandpile=sandpile, dla=dla)
+                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia or physarum, turmite=turmite, wator=wator, fallingsand=fallingsand, sandpile=sandpile, dla=dla, particlelife=particlelife)
                     try:
                         stdscr.addstr(tr, tc, ch, curses.color_pair(cp))
                     except curses.error:
@@ -6367,6 +6710,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_ising = ising
                 was_cca = cca
                 was_chimera = chimera
+                was_pl = particlelife
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -6386,10 +6730,11 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_ising = _is_ising(rule)
                 new_cca = _is_cca(rule)
                 new_chimera = _is_chimera(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca or new_chimera:
+                new_pl = _is_particlelife(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca or new_chimera or new_pl:
                     hashlife_active = False
                 # Mode transition: clear grid and re-initialize
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca or was_chimera != new_chimera:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca or was_chimera != new_chimera or was_pl != new_pl:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -6429,6 +6774,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_chimera:
                         _chimera_init(rows, cols)
                         grid = _chimera_to_grid(rows, cols)
+                    elif new_pl:
+                        _pl_init(rows, cols)
+                        grid = _pl_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -6565,6 +6913,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_ising = ising
                 was_cca = cca
                 was_chimera = chimera
+                was_pl = particlelife
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -6584,9 +6933,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_ising = _is_ising(rule)
                 new_cca = _is_cca(rule)
                 new_chimera = _is_chimera(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca or new_chimera:
+                new_pl = _is_particlelife(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca or new_chimera or new_pl:
                     hashlife_active = False
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca or was_chimera != new_chimera:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca or was_chimera != new_chimera or was_pl != new_pl:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -6629,6 +6979,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_chimera:
                         _chimera_init(rows, cols)
                         grid = _chimera_to_grid(rows, cols)
+                    elif new_pl:
+                        _pl_init(rows, cols)
+                        grid = _pl_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -7410,6 +7763,25 @@ def _save_module_state(rule):
             "_chimera_rules": copy.deepcopy(_chimera_rules),
             "_chimera_layout": _chimera_layout,
         })
+    elif _is_particlelife(rule):
+        state.update({
+            "_pl_x": copy.deepcopy(_pl_x),
+            "_pl_y": copy.deepcopy(_pl_y),
+            "_pl_vx": copy.deepcopy(_pl_vx),
+            "_pl_vy": copy.deepcopy(_pl_vy),
+            "_pl_species": copy.deepcopy(_pl_species),
+            "_pl_matrix": copy.deepcopy(_pl_matrix),
+            "_pl_n_species": _pl_n_species,
+            "_pl_n_particles": _pl_n_particles,
+            "_pl_r_max": _pl_r_max,
+            "_pl_friction": _pl_friction,
+            "_pl_force_scale": _pl_force_scale,
+            "_pl_world_w": _pl_world_w,
+            "_pl_world_h": _pl_world_h,
+            "_pl_rows": _pl_rows,
+            "_pl_cols": _pl_cols,
+            "_pl_preset_idx": _pl_preset_idx,
+        })
     return state
 
 
@@ -7538,10 +7910,32 @@ def _restore_module_state(rule, state):
         _chimera_preset_idx = state["_chimera_preset_idx"]
         _chimera_rules = state["_chimera_rules"]
         _chimera_layout = state["_chimera_layout"]
+    elif _is_particlelife(rule):
+        global _pl_x, _pl_y, _pl_vx, _pl_vy, _pl_species, _pl_matrix
+        global _pl_n_species, _pl_n_particles, _pl_r_max, _pl_friction, _pl_force_scale
+        global _pl_world_w, _pl_world_h, _pl_rows, _pl_cols, _pl_preset_idx
+        _pl_x = state["_pl_x"]
+        _pl_y = state["_pl_y"]
+        _pl_vx = state["_pl_vx"]
+        _pl_vy = state["_pl_vy"]
+        _pl_species = state["_pl_species"]
+        _pl_matrix = state["_pl_matrix"]
+        _pl_n_species = state["_pl_n_species"]
+        _pl_n_particles = state["_pl_n_particles"]
+        _pl_r_max = state["_pl_r_max"]
+        _pl_friction = state["_pl_friction"]
+        _pl_force_scale = state["_pl_force_scale"]
+        _pl_world_w = state["_pl_world_w"]
+        _pl_world_h = state["_pl_world_h"]
+        _pl_rows = state["_pl_rows"]
+        _pl_cols = state["_pl_cols"]
+        _pl_preset_idx = state["_pl_preset_idx"]
 
 
 def _cell_color_pair(age, rule):
     """Return the curses color-pair number for a cell value under *rule*."""
+    if _is_particlelife(rule):
+        return _pl_color(age)
     if _is_forestfire(rule):
         return _ff_color(age)
     if _is_ising(rule):
@@ -7569,6 +7963,8 @@ def _cell_color_pair(age, rule):
 
 def _cell_str(age, rule):
     """Return the two-char display string for a cell value under *rule*."""
+    if _is_particlelife(rule):
+        return "\u2588\u2588" if age else "  "
     if _is_ising(rule):
         return "\u2588\u2588"
     if _is_cca(rule):
@@ -8622,6 +9018,13 @@ def main():
              "Options: " + ", ".join(CHIMERA_PRESETS.keys()),
     )
     parser.add_argument(
+        "--particlelife-preset",
+        choices=list(PARTICLELIFE_PRESETS.keys()),
+        default="primordial",
+        help="Particle Life preset when --rule particlelife (default: primordial). "
+             "Options: " + ", ".join(PARTICLELIFE_PRESETS.keys()),
+    )
+    parser.add_argument(
         "--discover",
         action="store_true",
         default=False,
@@ -8699,7 +9102,7 @@ def main():
     )
     args = parser.parse_args()
 
-    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx, _fs_preset_idx, _sp_preset_idx, _dla_preset_idx, _ff_preset_idx, _chimera_preset_idx
+    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx, _fs_preset_idx, _sp_preset_idx, _dla_preset_idx, _ff_preset_idx, _chimera_preset_idx, _pl_preset_idx
 
     # Headless batch-render mode: output PNG frames without terminal UI
     if args.render is not None:
@@ -8812,6 +9215,9 @@ def main():
             elif _is_chimera(rule):
                 _chimera_init(r, c)
                 g = _chimera_to_grid(r, c)
+            elif _is_particlelife(rule):
+                _pl_init(r, c)
+                g = _pl_to_grid(r, c)
             else:
                 place_pattern(g, args.pattern)
             return g
@@ -8985,6 +9391,14 @@ def main():
             rule["name"] = f"Chimera Grid ({preset['desc']})"
         _chimera_init(args.rows, args.cols, chimera_preset_name)
         grid = _chimera_to_grid(args.rows, args.cols)
+    elif args.rule.lower() == "particlelife":
+        pl_preset_name = args.particlelife_preset
+        if pl_preset_name in PARTICLELIFE_PRESETS:
+            _pl_preset_idx = PARTICLELIFE_PRESET_NAMES.index(pl_preset_name)
+            preset = PARTICLELIFE_PRESETS[pl_preset_name]
+            rule["name"] = f"Particle Life ({preset['name']})"
+        _pl_init(args.rows, args.cols, pl_preset_name)
+        grid = _pl_to_grid(args.rows, args.cols)
     elif args.rule.lower() == "sandpile":
         # Abelian Sandpile self-organized criticality
         sp_preset_name = args.sandpile_preset
