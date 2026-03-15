@@ -1,6 +1,6 @@
 # Cellular Automaton — Terminal Simulator
 
-A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, the **Ising Model** statistical mechanics spin simulation, the **Cyclic Cellular Automaton** (CCA) spiral wave generator, the **Chimera Grid** multi-rule coexistence mode, **Particle Life** emergent multi-species particle interactions, **Lattice Boltzmann** D2Q9 fluid dynamics, **Boids** flocking/swarming simulation, a **split-screen comparison mode** for watching two simulations side-by-side, and supports arbitrary rules via B/S notation.
+A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, the **Ising Model** statistical mechanics spin simulation, the **Cyclic Cellular Automaton** (CCA) spiral wave generator, the **Chimera Grid** multi-rule coexistence mode, **Particle Life** emergent multi-species particle interactions, **Lattice Boltzmann** D2Q9 fluid dynamics, **Boids** flocking/swarming simulation, **Wave Function Collapse** (WFC) constraint-based procedural generation, a **split-screen comparison mode** for watching two simulations side-by-side, and supports arbitrary rules via B/S notation.
 
 ## Usage
 
@@ -56,6 +56,10 @@ python3 life.py --rule fluid --fluid-preset convection                # Rayleigh
 python3 life.py --rule boids                                             # Boids flocking (classic flock)
 python3 life.py --rule boids --boids-preset predator                     # predator evasion swarm
 python3 life.py --rule boids --boids-preset murmuration                  # dense starling murmuration
+python3 life.py --rule wfc                                                  # WFC procedural generation (pipes)
+python3 life.py --rule wfc --wfc-preset terrain                             # terrain elevation landscape
+python3 life.py --rule wfc --wfc-preset circuits                            # logic circuit path layouts
+python3 life.py --rule wfc --wfc-preset fabric                              # woven textile patterns
 python3 life.py --script probabilistic_life        # run a user script on startup
 python3 life.py --script ~/my_script.py            # run a script from a file path
 python3 life.py --compare life highlife              # split-screen: Life vs HighLife
@@ -76,7 +80,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--speed`   | 0.1       | Delay between generations (seconds)  |
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
 | `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
-| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, `sandpile`, `dla`, `forestfire`, `ising`, `cca`, `chimera`, `particlelife`, `fluid`, `boids`, or B/S notation (e.g. `B36/S23`) |
+| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, `sandpile`, `dla`, `forestfire`, `ising`, `cca`, `chimera`, `particlelife`, `fluid`, `boids`, `wfc`, or B/S notation (e.g. `B36/S23`) |
 | `--gs-preset` | `mitosis` | Gray-Scott parameter preset (`mitosis`, `coral`, `solitons`, `maze`, `spots`, `worms`, `waves`, `bubbles`) |
 | `--lenia-preset` | `orbium` | Lenia species preset (`orbium`, `geminium`, `scutium`, `hydrogeminium`, `wanderer`, `smooth_life`) |
 | `--eca-rule` | 30        | Wolfram rule number (0–255) for Elementary CA mode |
@@ -93,6 +97,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--particlelife-preset` | `primordial` | Particle Life preset (`primordial`, `clusters`, `orbits`, `swarm`, `chains`) |
 | `--fluid-preset` | `cavity` | LBM Fluid preset (`cavity`, `karman`, `convection`) |
 | `--boids-preset` | `flock` | Boids flocking preset (`flock`, `predator`, `obstacle`, `murmuration`, `vortex`) |
+| `--wfc-preset` | `pipes` | WFC tile preset (`pipes`, `terrain`, `circuits`, `fabric`) |
 | `--script`  | —         | Run a Python script on startup (path or name from `~/.life-scripts/`) |
 | `--discover` | off      | Launch genetic algorithm rule discovery mode |
 | `--ga-generations` | 50 | Number of GA generations in discovery mode |
@@ -961,6 +966,52 @@ Press `<` / `>` at runtime to cycle through presets:
 - **HashLife** — incompatible (continuous agent-based, not discrete cells). Switching to Boids mode auto-deactivates HashLife.
 - **Split-screen** — fully supported. Complete Boids state (positions, velocities, predators, obstacles) is saved/restored for independent pane simulation.
 - **Randomize** (`r`) — re-scatters all boids and predators to random positions with random headings.
+
+## Wave Function Collapse (WFC) — Procedural Generation
+
+The Wave Function Collapse algorithm is a constraint-based procedural generation technique. Cells start in a **superposition** of all possible tile states, then iteratively **collapse** one-by-one (lowest entropy first), propagating adjacency constraints to their neighbors. The terminal visualizes the constraint-solving process live — uncollapsed cells display entropy-shaded indicators while resolved tiles show their final Unicode characters in full color.
+
+This is the project's first *generative/constructive* simulation: rather than evolving dynamic systems over time, WFC builds a complete output by solving constraints. When the grid is fully collapsed (or hits a contradiction), it automatically restarts with a fresh generation.
+
+### Starting WFC
+
+```bash
+python3 life.py --rule wfc                          # pipes preset (default)
+python3 life.py --rule wfc --wfc-preset terrain      # elevation landscape tiles
+python3 life.py --rule wfc --wfc-preset circuits     # logic circuit path layouts
+python3 life.py --rule wfc --wfc-preset fabric       # woven textile patterns
+```
+
+### Presets
+
+Press `<` / `>` at runtime to cycle through presets:
+
+| Preset | Tiles | Description |
+|--------|-------|-------------|
+| `pipes` | 12 | Connected pipe networks using box-drawing characters (empty, pipes, corners, T-junctions, cross) |
+| `terrain` | 17 | Elevation-based landscape with water, sand, grass, forest, mountain, snow and biome transitions |
+| `circuits` | 13 | Logic circuit layouts with wires, corners, junctions, and gates using light box-drawing chars |
+| `fabric` | 8 | Woven textile patterns with warp/weft threads, knots, and crossings |
+
+### Algorithm
+
+1. **Initialize** — every cell holds the full set of possible tiles (superposition)
+2. **Select** — find the cell with lowest Shannon entropy (most constrained, fewest options)
+3. **Collapse** — choose a tile for that cell, weighted by preset tile weights
+4. **Propagate** — worklist-based constraint propagation removes incompatible tiles from neighbors; this cascades until stable
+5. **Repeat** — collapse multiple cells per step (configurable per preset) for smooth animation
+6. **Restart** — when fully collapsed or contradicted, pause briefly then reinitialize
+
+### Rendering
+
+- **Terminal** — collapsed cells display their tile's Unicode character (box-drawing, terrain symbols, etc.) with preset-defined colors. Uncollapsed cells show entropy-shaded block characters — brighter shading means more remaining possibilities.
+- **Braille** — supported; tiles map to the Braille sub-grid based on collapse state.
+
+### Interactions
+
+- **HashLife** — incompatible (constraint-based, not discrete cells). Switching to WFC auto-deactivates HashLife.
+- **Split-screen** — fully supported. Complete WFC state (possible sets, collapsed tiles, adjacency tables) is saved/restored for independent pane simulation.
+- **Randomize** (`r`) — reinitializes the grid with all cells in full superposition.
 
 ## Population Statistics Dashboard
 

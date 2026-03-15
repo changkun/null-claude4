@@ -53,6 +53,7 @@ RULES = {
     "particlelife": {"b": set(), "s": set(), "name": "Particle Life (Primordial Soup)", "particlelife": True},
     "fluid": {"b": set(), "s": set(), "name": "LBM Fluid (Lid-Driven Cavity)", "fluid": True},
     "boids": {"b": set(), "s": set(), "name": "Boids (Classic Flock)", "boids": True},
+    "wfc": {"b": set(), "s": set(), "name": "WFC (Pipes)", "wfc": True},
 }
 
 RULE_NAMES = list(RULES.keys())
@@ -208,6 +209,11 @@ def _is_fluid(rule):
 def _is_boids(rule):
     """Check if the current rule is the Boids flocking simulation."""
     return rule.get("boids", False)
+
+
+def _is_wfc(rule):
+    """Check if the current rule is the Wave Function Collapse simulation."""
+    return rule.get("wfc", False)
 
 
 # --- Wa-Tor Predator-Prey Ecosystem ---
@@ -4199,6 +4205,350 @@ def _boids_color(val):
         return 19      # obstacle — dim
 
 
+# --- Wave Function Collapse (WFC) Procedural Generation ---
+# Constraint-based tile placement: cells start in superposition of all possible
+# tile states, then collapse one-by-one (lowest entropy first), propagating
+# adjacency constraints to neighbors. Visualizes the constraint-solving process
+# live with color-coded tiles resolving from uncertain to definite states.
+
+# Each tile has adjacency constraints: which tile IDs can appear on each side.
+# Sides are indexed as: 0=North, 1=East, 2=South, 3=West.
+# Edges are encoded as strings; matching edges must be equal.
+
+# --- Tile definitions per preset ---
+# Each tile: {"name": str, "char": str, "color": int, "edges": [N, E, S, W]}
+# Edges that match can be adjacent.
+
+_WFC_TILES_PIPES = [
+    {"name": "empty",  "char": "  ", "color": 1,  "edges": ["e", "e", "e", "e"]},
+    {"name": "h-pipe", "char": "\u2550\u2550", "color": 12, "edges": ["e", "p", "e", "p"]},
+    {"name": "v-pipe", "char": "\u2551 ", "color": 12, "edges": ["p", "e", "p", "e"]},
+    {"name": "tl",     "char": "\u2554\u2550", "color": 14, "edges": ["e", "p", "p", "e"]},
+    {"name": "tr",     "char": "\u2557 ", "color": 14, "edges": ["e", "e", "p", "p"]},
+    {"name": "bl",     "char": "\u255a\u2550", "color": 14, "edges": ["p", "p", "e", "e"]},
+    {"name": "br",     "char": "\u255d ", "color": 14, "edges": ["p", "e", "e", "p"]},
+    {"name": "t-down", "char": "\u2566\u2550", "color": 11, "edges": ["e", "p", "p", "p"]},
+    {"name": "t-up",   "char": "\u2569\u2550", "color": 11, "edges": ["p", "p", "e", "p"]},
+    {"name": "t-right","char": "\u2560\u2550", "color": 11, "edges": ["p", "p", "p", "e"]},
+    {"name": "t-left", "char": "\u2563 ", "color": 11, "edges": ["p", "e", "p", "p"]},
+    {"name": "cross",  "char": "\u256c\u2550", "color": 13, "edges": ["p", "p", "p", "p"]},
+]
+
+_WFC_TILES_TERRAIN = [
+    {"name": "water",    "char": "\u2248 ", "color": 12, "edges": ["w", "w", "w", "w"]},
+    {"name": "shallows", "char": "\u2592\u2592", "color": 14, "edges": ["w", "w", "w", "w"]},
+    {"name": "sand",     "char": "\u2591\u2591", "color": 4,  "edges": ["s", "s", "s", "s"]},
+    {"name": "grass",    "char": "\u2593\u2593", "color": 1,  "edges": ["g", "g", "g", "g"]},
+    {"name": "forest",   "char": "\u2588\u2588", "color": 10, "edges": ["f", "f", "f", "f"]},
+    {"name": "mountain", "char": "/\\", "color": 19, "edges": ["m", "m", "m", "m"]},
+    {"name": "snow",     "char": "**", "color": 8,  "edges": ["n", "n", "n", "n"]},
+    # Transition tiles (edges connect two biomes)
+    {"name": "coast",    "char": "~ ", "color": 14, "edges": ["w", "s", "w", "s"]},
+    {"name": "coast2",   "char": " ~", "color": 14, "edges": ["s", "w", "s", "w"]},
+    {"name": "shore",    "char": ". ", "color": 4,  "edges": ["s", "g", "s", "g"]},
+    {"name": "shore2",   "char": " .", "color": 4,  "edges": ["g", "s", "g", "s"]},
+    {"name": "edge",     "char": ".:","color": 1,  "edges": ["g", "f", "g", "f"]},
+    {"name": "edge2",    "char": ":.", "color": 1,  "edges": ["f", "g", "f", "g"]},
+    {"name": "treeline", "char": "^:", "color": 10, "edges": ["f", "m", "f", "m"]},
+    {"name": "treeline2","char": ":^", "color": 10, "edges": ["m", "f", "m", "f"]},
+    {"name": "peak",     "char": "^^", "color": 19, "edges": ["m", "n", "m", "n"]},
+    {"name": "peak2",    "char": "^^", "color": 19, "edges": ["n", "m", "n", "m"]},
+]
+
+_WFC_TILES_CIRCUITS = [
+    {"name": "empty",   "char": "  ", "color": 1,  "edges": ["e", "e", "e", "e"]},
+    {"name": "wire-h",  "char": "\u2500\u2500", "color": 4,  "edges": ["e", "c", "e", "c"]},
+    {"name": "wire-v",  "char": "\u2502 ", "color": 4,  "edges": ["c", "e", "c", "e"]},
+    {"name": "c-tl",    "char": "\u250c\u2500", "color": 11, "edges": ["e", "c", "c", "e"]},
+    {"name": "c-tr",    "char": "\u2510 ", "color": 11, "edges": ["e", "e", "c", "c"]},
+    {"name": "c-bl",    "char": "\u2514\u2500", "color": 11, "edges": ["c", "c", "e", "e"]},
+    {"name": "c-br",    "char": "\u2518 ", "color": 11, "edges": ["c", "e", "e", "c"]},
+    {"name": "j-down",  "char": "\u252c\u2500", "color": 13, "edges": ["e", "c", "c", "c"]},
+    {"name": "j-up",    "char": "\u2534\u2500", "color": 13, "edges": ["c", "c", "e", "c"]},
+    {"name": "j-right", "char": "\u251c\u2500", "color": 13, "edges": ["c", "c", "c", "e"]},
+    {"name": "j-left",  "char": "\u2524 ", "color": 13, "edges": ["c", "e", "c", "c"]},
+    {"name": "cross",   "char": "\u253c\u2500", "color": 21, "edges": ["c", "c", "c", "c"]},
+    {"name": "gate",    "char": "\u25a0 ", "color": 21, "edges": ["c", "c", "c", "c"]},
+]
+
+_WFC_TILES_FABRIC = [
+    {"name": "warp-a",  "char": "\u2502\u2502", "color": 12, "edges": ["a", "x", "a", "x"]},
+    {"name": "weft-a",  "char": "\u2550\u2550", "color": 4,  "edges": ["x", "b", "x", "b"]},
+    {"name": "warp-b",  "char": "\u2551 ", "color": 14, "edges": ["b", "x", "b", "x"]},
+    {"name": "weft-b",  "char": "\u2500\u2500", "color": 11, "edges": ["x", "a", "x", "a"]},
+    {"name": "knot-ab", "char": "\u256c ", "color": 13, "edges": ["a", "b", "a", "b"]},
+    {"name": "knot-ba", "char": " \u256c", "color": 13, "edges": ["b", "a", "b", "a"]},
+    {"name": "cross-a", "char": "\u253c\u253c", "color": 8,  "edges": ["a", "a", "a", "a"]},
+    {"name": "cross-b", "char": "\u254b\u254b", "color": 8,  "edges": ["b", "b", "b", "b"]},
+]
+
+WFC_PRESETS = {
+    "pipes": {
+        "name": "Pipes",
+        "tiles": _WFC_TILES_PIPES,
+        "collapses_per_step": 3,
+        "weights": [6, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    },
+    "terrain": {
+        "name": "Terrain",
+        "tiles": _WFC_TILES_TERRAIN,
+        "collapses_per_step": 5,
+        "weights": [3, 1, 3, 4, 3, 2, 1, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1],
+    },
+    "circuits": {
+        "name": "Circuits",
+        "tiles": _WFC_TILES_CIRCUITS,
+        "collapses_per_step": 3,
+        "weights": [5, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    },
+    "fabric": {
+        "name": "Fabric",
+        "tiles": _WFC_TILES_FABRIC,
+        "collapses_per_step": 4,
+        "weights": [3, 3, 3, 3, 1, 1, 1, 1],
+    },
+}
+
+WFC_PRESET_NAMES = list(WFC_PRESETS.keys())
+
+# Module-level WFC state
+_wfc_possible = None       # 2D list of sets: possible tile indices per cell
+_wfc_collapsed = None      # 2D list: collapsed tile index (-1 if not collapsed)
+_wfc_rows = 0
+_wfc_cols = 0
+_wfc_preset_idx = 0
+_wfc_tiles = None          # current tile definitions list
+_wfc_weights = None        # per-tile weights for collapse selection
+_wfc_collapses_per_step = 3
+_wfc_adjacency = None      # precomputed: adjacency[tile_id][direction] = set of compatible tile IDs
+_wfc_done = False          # True when fully collapsed or contradicted
+_wfc_wavefront = None      # set of (r, c) recently collapsed (for highlight)
+_wfc_contradiction = False # True if a contradiction was found
+
+
+def _wfc_build_adjacency(tiles):
+    """Precompute adjacency lookup: for each tile and direction, which tiles are compatible."""
+    n = len(tiles)
+    # adj[tid][d] = set of tile IDs that can be placed in direction d from tile tid
+    # Direction mapping: 0=North, 1=East, 2=South, 3=West
+    # The opposite direction: North<->South (0<->2), East<->West (1<->3)
+    opposite = [2, 3, 0, 1]
+    adj = [[set() for _ in range(4)] for _ in range(n)]
+    for tid in range(n):
+        for d in range(4):
+            edge = tiles[tid]["edges"][d]
+            opp = opposite[d]
+            for other in range(n):
+                if tiles[other]["edges"][opp] == edge:
+                    adj[tid][d].add(other)
+    return adj
+
+
+def _wfc_init(rows, cols, preset_name=None):
+    """Initialize the Wave Function Collapse simulation."""
+    global _wfc_possible, _wfc_collapsed, _wfc_rows, _wfc_cols, _wfc_preset_idx
+    global _wfc_tiles, _wfc_weights, _wfc_collapses_per_step, _wfc_adjacency
+    global _wfc_done, _wfc_wavefront, _wfc_contradiction
+    import random as _rng
+
+    _wfc_rows, _wfc_cols = rows, cols
+
+    if preset_name is None:
+        preset_name = WFC_PRESET_NAMES[_wfc_preset_idx]
+    elif preset_name in WFC_PRESETS:
+        _wfc_preset_idx = WFC_PRESET_NAMES.index(preset_name)
+
+    p = WFC_PRESETS[preset_name]
+    _wfc_tiles = p["tiles"]
+    _wfc_weights = p["weights"]
+    _wfc_collapses_per_step = p["collapses_per_step"]
+    _wfc_adjacency = _wfc_build_adjacency(_wfc_tiles)
+    _wfc_done = False
+    _wfc_contradiction = False
+    _wfc_wavefront = set()
+
+    n_tiles = len(_wfc_tiles)
+    all_tiles = set(range(n_tiles))
+    _wfc_possible = [[set(all_tiles) for _ in range(cols)] for _ in range(rows)]
+    _wfc_collapsed = [[-1] * cols for _ in range(rows)]
+
+
+def _wfc_entropy(r, c):
+    """Return the entropy of cell (r, c). Lower = more constrained."""
+    p = _wfc_possible[r][c]
+    n = len(p)
+    if n <= 1:
+        return float('inf')  # already collapsed or contradiction
+    # Weighted entropy: -sum(w_i * log(w_i)) for normalized weights
+    total = sum(_wfc_weights[t] for t in p)
+    if total <= 0:
+        return float('inf')
+    entropy = 0.0
+    for t in p:
+        w = _wfc_weights[t] / total
+        if w > 0:
+            entropy -= w * math.log(w)
+    return entropy
+
+
+def _wfc_propagate(start_r, start_c):
+    """Propagate constraints from a collapsed cell using a worklist algorithm."""
+    stack = [(start_r, start_c)]
+    rows, cols = _wfc_rows, _wfc_cols
+    adj = _wfc_adjacency
+    # Direction offsets: N, E, S, W
+    dr = [-1, 0, 1, 0]
+    dc = [0, 1, 0, -1]
+
+    while stack:
+        r, c = stack.pop()
+        possible_here = _wfc_possible[r][c]
+        if not possible_here:
+            continue
+
+        for d in range(4):
+            nr, nc = r + dr[d], c + dc[d]
+            if nr < 0 or nr >= rows or nc < 0 or nc >= cols:
+                continue
+            if _wfc_collapsed[nr][nc] >= 0:
+                continue  # already collapsed
+
+            # Compute which tiles are allowed in neighbor based on our possibilities
+            allowed = set()
+            for t in possible_here:
+                allowed |= adj[t][d]
+
+            neighbor_possible = _wfc_possible[nr][nc]
+            new_possible = neighbor_possible & allowed
+            if new_possible != neighbor_possible:
+                _wfc_possible[nr][nc] = new_possible
+                if not new_possible:
+                    # Contradiction — mark it
+                    global _wfc_contradiction
+                    _wfc_contradiction = True
+                else:
+                    stack.append((nr, nc))
+
+
+def _wfc_step():
+    """Advance WFC by collapsing a few cells (lowest entropy first)."""
+    global _wfc_done, _wfc_wavefront, _wfc_contradiction
+    import random as _rng
+
+    if _wfc_done:
+        # If fully done, restart after a pause
+        _wfc_init(_wfc_rows, _wfc_cols)
+        return
+
+    _wfc_wavefront = set()
+
+    for _ in range(_wfc_collapses_per_step):
+        if _wfc_contradiction:
+            _wfc_done = True
+            return
+
+        # Find uncollapsed cell with minimum entropy
+        min_entropy = float('inf')
+        candidates = []
+        for r in range(_wfc_rows):
+            for c in range(_wfc_cols):
+                if _wfc_collapsed[r][c] >= 0:
+                    continue
+                p = _wfc_possible[r][c]
+                if not p:
+                    continue  # contradiction cell
+                if len(p) == 1:
+                    # Auto-collapse single-possibility cells
+                    tid = next(iter(p))
+                    _wfc_collapsed[r][c] = tid
+                    _wfc_wavefront.add((r, c))
+                    _wfc_propagate(r, c)
+                    continue
+                e = _wfc_entropy(r, c)
+                if e < min_entropy:
+                    min_entropy = e
+                    candidates = [(r, c)]
+                elif e == min_entropy:
+                    candidates.append((r, c))
+
+        if not candidates:
+            _wfc_done = True
+            return
+
+        # Pick a random cell among lowest-entropy candidates
+        r, c = _rng.choice(candidates)
+        possible = _wfc_possible[r][c]
+
+        # Weighted random collapse
+        tiles_list = list(possible)
+        weights = [_wfc_weights[t] for t in tiles_list]
+        total = sum(weights)
+        pick = _rng.uniform(0, total)
+        cumulative = 0.0
+        chosen = tiles_list[0]
+        for i, w in enumerate(weights):
+            cumulative += w
+            if pick <= cumulative:
+                chosen = tiles_list[i]
+                break
+
+        _wfc_collapsed[r][c] = chosen
+        _wfc_possible[r][c] = {chosen}
+        _wfc_wavefront.add((r, c))
+        _wfc_propagate(r, c)
+
+
+def _wfc_to_grid(rows, cols):
+    """Convert WFC state to a 2D display grid.
+
+    Grid values:
+      0 = uncollapsed (many possibilities)
+      1 = uncollapsed but constrained (few possibilities)
+      2 = recently collapsed (wavefront highlight)
+      3 + tile_id = collapsed tile
+      100 = contradiction
+    """
+    grid = [[0] * cols for _ in range(rows)]
+    n_tiles = len(_wfc_tiles)
+
+    for r in range(min(rows, _wfc_rows)):
+        for c in range(min(cols, _wfc_cols)):
+            if _wfc_collapsed[r][c] >= 0:
+                tid = _wfc_collapsed[r][c]
+                if (r, c) in _wfc_wavefront:
+                    grid[r][c] = 2  # wavefront
+                else:
+                    grid[r][c] = 3 + tid
+            else:
+                p = _wfc_possible[r][c]
+                if not p:
+                    grid[r][c] = 100  # contradiction
+                elif len(p) < n_tiles:
+                    grid[r][c] = 1  # constrained superposition
+                else:
+                    grid[r][c] = 0  # full superposition
+    return grid
+
+
+def _wfc_color(val):
+    """Map a WFC grid value to a curses color pair."""
+    if val == 0:
+        return 19      # full superposition — dim
+    elif val == 1:
+        return 8        # constrained — slightly brighter
+    elif val == 2:
+        return 4        # wavefront — yellow highlight
+    elif val == 100:
+        return 21       # contradiction — red
+    elif val >= 3:
+        # Collapsed tile — use the tile's defined color
+        tid = val - 3
+        if _wfc_tiles and tid < len(_wfc_tiles):
+            return _wfc_tiles[tid]["color"]
+        return 1
+    return 1
+
+
 def parse_rule_string(rule_str):
     """Parse a rule string like 'B36/S23' into birth/survival sets."""
     rule_str = rule_str.upper().replace(" ", "")
@@ -5039,6 +5389,10 @@ def place_pattern(grid, name, row_off=None, col_off=None):
 def step(grid, rule=None):
     if rule is None:
         rule = RULES["life"]
+    if _is_wfc(rule):
+        rows, cols = len(grid), len(grid[0])
+        _wfc_step()
+        return _wfc_to_grid(rows, cols)
     if _is_boids(rule):
         rows, cols = len(grid), len(grid[0])
         if _HAS_NUMPY:
@@ -8876,6 +9230,21 @@ def _save_module_state(rule):
             "_lbm_buoyancy": _lbm_buoyancy,
             "_lbm_temperature": copy.deepcopy(_lbm_temperature),
         })
+    elif _is_wfc(rule):
+        state.update({
+            "_wfc_possible": copy.deepcopy(_wfc_possible),
+            "_wfc_collapsed": copy.deepcopy(_wfc_collapsed),
+            "_wfc_rows": _wfc_rows,
+            "_wfc_cols": _wfc_cols,
+            "_wfc_preset_idx": _wfc_preset_idx,
+            "_wfc_tiles": _wfc_tiles,
+            "_wfc_weights": _wfc_weights,
+            "_wfc_collapses_per_step": _wfc_collapses_per_step,
+            "_wfc_adjacency": copy.deepcopy(_wfc_adjacency),
+            "_wfc_done": _wfc_done,
+            "_wfc_wavefront": copy.deepcopy(_wfc_wavefront),
+            "_wfc_contradiction": _wfc_contradiction,
+        })
     elif _is_boids(rule):
         state.update({
             "_boids_x": copy.deepcopy(_boids_x),
@@ -9070,6 +9439,22 @@ def _restore_module_state(rule, state):
         _lbm_inflow_speed = state["_lbm_inflow_speed"]
         _lbm_buoyancy = state["_lbm_buoyancy"]
         _lbm_temperature = state["_lbm_temperature"]
+    elif _is_wfc(rule):
+        global _wfc_possible, _wfc_collapsed, _wfc_rows, _wfc_cols, _wfc_preset_idx
+        global _wfc_tiles, _wfc_weights, _wfc_collapses_per_step, _wfc_adjacency
+        global _wfc_done, _wfc_wavefront, _wfc_contradiction
+        _wfc_possible = state["_wfc_possible"]
+        _wfc_collapsed = state["_wfc_collapsed"]
+        _wfc_rows = state["_wfc_rows"]
+        _wfc_cols = state["_wfc_cols"]
+        _wfc_preset_idx = state["_wfc_preset_idx"]
+        _wfc_tiles = state["_wfc_tiles"]
+        _wfc_weights = state["_wfc_weights"]
+        _wfc_collapses_per_step = state["_wfc_collapses_per_step"]
+        _wfc_adjacency = state["_wfc_adjacency"]
+        _wfc_done = state["_wfc_done"]
+        _wfc_wavefront = state["_wfc_wavefront"]
+        _wfc_contradiction = state["_wfc_contradiction"]
     elif _is_boids(rule):
         global _boids_x, _boids_y, _boids_vx, _boids_vy, _boids_n
         global _boids_visual_range, _boids_sep_dist, _boids_max_speed
@@ -9108,6 +9493,8 @@ def _restore_module_state(rule, state):
 
 def _cell_color_pair(age, rule):
     """Return the curses color-pair number for a cell value under *rule*."""
+    if _is_wfc(rule):
+        return _wfc_color(age)
     if _is_boids(rule):
         return _boids_color(age)
     if _is_fluid(rule):
@@ -9141,6 +9528,21 @@ def _cell_color_pair(age, rule):
 
 def _cell_str(age, rule):
     """Return the two-char display string for a cell value under *rule*."""
+    if _is_wfc(rule):
+        if age == 0:
+            return "\u2591\u2591"  # full superposition — light shade
+        elif age == 1:
+            return "\u2592\u2592"  # constrained — medium shade
+        elif age == 2:
+            return "\u2588\u2588"  # wavefront — full block (bright)
+        elif age == 100:
+            return "XX"            # contradiction
+        elif age >= 3 and _wfc_tiles:
+            tid = age - 3
+            if tid < len(_wfc_tiles):
+                return _wfc_tiles[tid]["char"]
+            return "\u2588\u2588"
+        return "  "
     if _is_boids(rule):
         if age <= 0:
             return "  "
@@ -10229,6 +10631,13 @@ def main():
              "Options: " + ", ".join(BOIDS_PRESETS.keys()),
     )
     parser.add_argument(
+        "--wfc-preset",
+        choices=list(WFC_PRESETS.keys()),
+        default="pipes",
+        help="WFC preset when --rule wfc (default: pipes). "
+             "Options: " + ", ".join(WFC_PRESETS.keys()),
+    )
+    parser.add_argument(
         "--discover",
         action="store_true",
         default=False,
@@ -10306,7 +10715,7 @@ def main():
     )
     args = parser.parse_args()
 
-    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx, _fs_preset_idx, _sp_preset_idx, _dla_preset_idx, _ff_preset_idx, _chimera_preset_idx, _pl_preset_idx, _lbm_preset_idx, _boids_preset_idx
+    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx, _fs_preset_idx, _sp_preset_idx, _dla_preset_idx, _ff_preset_idx, _chimera_preset_idx, _pl_preset_idx, _lbm_preset_idx, _boids_preset_idx, _wfc_preset_idx
 
     # Headless batch-render mode: output PNG frames without terminal UI
     if args.render is not None:
@@ -10428,6 +10837,9 @@ def main():
             elif _is_boids(rule):
                 _boids_init(r, c)
                 g = _boids_to_grid(r, c)
+            elif _is_wfc(rule):
+                _wfc_init(r, c)
+                g = _wfc_to_grid(r, c)
             else:
                 place_pattern(g, args.pattern)
             return g
@@ -10626,6 +11038,14 @@ def main():
             rule["name"] = f"Boids ({preset['name']})"
         _boids_init(args.rows, args.cols, boids_preset_name)
         grid = _boids_to_grid(args.rows, args.cols)
+    elif args.rule.lower() == "wfc":
+        wfc_preset_name = args.wfc_preset
+        if wfc_preset_name in WFC_PRESETS:
+            _wfc_preset_idx = WFC_PRESET_NAMES.index(wfc_preset_name)
+            preset = WFC_PRESETS[wfc_preset_name]
+            rule["name"] = f"WFC ({preset['name']})"
+        _wfc_init(args.rows, args.cols, wfc_preset_name)
+        grid = _wfc_to_grid(args.rows, args.cols)
     elif args.rule.lower() == "sandpile":
         # Abelian Sandpile self-organized criticality
         sp_preset_name = args.sandpile_preset
