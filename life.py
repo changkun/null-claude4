@@ -178,7 +178,7 @@ def step(grid):
         for c in range(cols):
             n = _neighbours(grid, r, c, rows, cols)
             if grid[r][c]:
-                new[r][c] = 1 if n in (2, 3) else 0
+                new[r][c] = (grid[r][c] + 1) if n in (2, 3) else 0
             else:
                 new[r][c] = 1 if n == 3 else 0
     return new
@@ -191,8 +191,20 @@ def _neighbours(grid, r, c, rows, cols):
             if dr == 0 and dc == 0:
                 continue
             nr, nc = (r + dr) % rows, (c + dc) % cols
-            count += grid[nr][nc]
+            count += 1 if grid[nr][nc] else 0
     return count
+
+
+def _age_color(age):
+    """Return curses color pair number based on cell age."""
+    if age <= 3:
+        return 1   # green — newborn
+    elif age <= 8:
+        return 5   # cyan — young
+    elif age <= 20:
+        return 6   # blue — mature
+    else:
+        return 7   # magenta — ancient
 
 
 def run(stdscr, grid, speed):
@@ -200,10 +212,13 @@ def run(stdscr, grid, speed):
     stdscr.nodelay(True)
     curses.start_color()
     curses.use_default_colors()
-    curses.init_pair(1, curses.COLOR_GREEN, -1)
+    curses.init_pair(1, curses.COLOR_GREEN, -1)       # age 1-3: newborn (bright green)
     curses.init_pair(2, curses.COLOR_WHITE, -1)
     curses.init_pair(3, curses.COLOR_BLACK, curses.COLOR_YELLOW)   # cursor on dead cell
     curses.init_pair(4, curses.COLOR_BLACK, curses.COLOR_GREEN)    # cursor on live cell
+    curses.init_pair(5, curses.COLOR_CYAN, -1)        # age 4-8: young (cyan)
+    curses.init_pair(6, curses.COLOR_BLUE, -1)        # age 9-20: mature (blue)
+    curses.init_pair(7, curses.COLOR_MAGENTA, -1)     # age 21+: ancient (magenta)
 
     rows, cols = len(grid), len(grid[0])
     generation = 0
@@ -221,11 +236,12 @@ def run(stdscr, grid, speed):
         # Draw grid
         for r in range(vis_rows):
             for c in range(vis_cols):
-                cell_str = "\u2588\u2588" if grid[r][c] else "  "
+                age = grid[r][c]
+                cell_str = "\u2588\u2588" if age else "  "
                 if editing and r == cursor_r and c == cursor_c:
-                    attr = curses.color_pair(4) if grid[r][c] else curses.color_pair(3)
+                    attr = curses.color_pair(4) if age else curses.color_pair(3)
                 else:
-                    attr = curses.color_pair(1)
+                    attr = curses.color_pair(_age_color(age)) if age else curses.color_pair(1)
                 try:
                     stdscr.addstr(r, c * 2, cell_str, attr)
                 except curses.error:
@@ -259,7 +275,7 @@ def run(stdscr, grid, speed):
             elif key == curses.KEY_RIGHT:
                 cursor_c = (cursor_c + 1) % cols
             elif key in (ord("\n"), ord(" "), curses.KEY_ENTER):
-                grid[cursor_r][cursor_c] ^= 1
+                grid[cursor_r][cursor_c] = 0 if grid[cursor_r][cursor_c] else 1
             elif key == ord("c"):
                 for r2 in range(rows):
                     for c2 in range(cols):

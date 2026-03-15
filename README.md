@@ -60,5 +60,10 @@ Patterns are saved in the standard plaintext `.cells` format, compatible with fi
 ## Design Notes
 
 - **Toroidal grid** — cells wrap around all edges, so patterns don't die at boundaries.
+- **Cell aging with color gradients** — cells change color based on how many generations they've been alive, creating a visual heatmap that reveals stable structures vs. active frontiers at a glance:
+  - **Green** (age 1–3) — newborn / active frontier
+  - **Cyan** (age 4–8) — young
+  - **Blue** (age 9–20) — mature
+  - **Magenta** (age 21+) — ancient / stable structures
 - **Curses rendering** — each live cell is drawn as a double-width block (`██`) for a square aspect ratio.
 - **All standard library** — only `curses`, `argparse`, `copy`, `os`, `time`, and `random` are used.
