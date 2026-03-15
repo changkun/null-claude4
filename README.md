@@ -1,6 +1,6 @@
 # Cellular Automaton — Terminal Simulator
 
-A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, the **Ising Model** statistical mechanics spin simulation, the **Cyclic Cellular Automaton** (CCA) spiral wave generator, the **Chimera Grid** multi-rule coexistence mode, **Particle Life** emergent multi-species particle interactions, a **split-screen comparison mode** for watching two simulations side-by-side, and supports arbitrary rules via B/S notation.
+A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, the **Ising Model** statistical mechanics spin simulation, the **Cyclic Cellular Automaton** (CCA) spiral wave generator, the **Chimera Grid** multi-rule coexistence mode, **Particle Life** emergent multi-species particle interactions, **Lattice Boltzmann** D2Q9 fluid dynamics, a **split-screen comparison mode** for watching two simulations side-by-side, and supports arbitrary rules via B/S notation.
 
 ## Usage
 
@@ -50,6 +50,9 @@ python3 life.py --rule chimera --chimera-preset diagonal-clash    # diagonal Lif
 python3 life.py --rule particlelife                                 # Particle Life (primordial soup)
 python3 life.py --rule particlelife --particlelife-preset clusters   # sticky attraction clusters
 python3 life.py --rule particlelife --particlelife-preset orbits     # asymmetric orbital dance
+python3 life.py --rule fluid                                          # LBM fluid (lid-driven cavity)
+python3 life.py --rule fluid --fluid-preset karman                    # Kármán vortex street
+python3 life.py --rule fluid --fluid-preset convection                # Rayleigh-Bénard convection
 python3 life.py --script probabilistic_life        # run a user script on startup
 python3 life.py --script ~/my_script.py            # run a script from a file path
 python3 life.py --compare life highlife              # split-screen: Life vs HighLife
@@ -70,7 +73,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--speed`   | 0.1       | Delay between generations (seconds)  |
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
 | `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
-| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, `sandpile`, `dla`, `forestfire`, `ising`, `cca`, `chimera`, `particlelife`, or B/S notation (e.g. `B36/S23`) |
+| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, `sandpile`, `dla`, `forestfire`, `ising`, `cca`, `chimera`, `particlelife`, `fluid`, or B/S notation (e.g. `B36/S23`) |
 | `--gs-preset` | `mitosis` | Gray-Scott parameter preset (`mitosis`, `coral`, `solitons`, `maze`, `spots`, `worms`, `waves`, `bubbles`) |
 | `--lenia-preset` | `orbium` | Lenia species preset (`orbium`, `geminium`, `scutium`, `hydrogeminium`, `wanderer`, `smooth_life`) |
 | `--eca-rule` | 30        | Wolfram rule number (0–255) for Elementary CA mode |
@@ -85,6 +88,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--cca-preset` | `classic` | Cyclic CA preset (`classic`, `sparse`, `von-neumann`, `rainbow`, `turbulent`) |
 | `--chimera-preset` | `life-vs-highlife` | Chimera Grid preset (`life-vs-highlife`, `life-vs-seeds`, `quad-mix`, `stripes-3`, `diagonal-clash`) |
 | `--particlelife-preset` | `primordial` | Particle Life preset (`primordial`, `clusters`, `orbits`, `swarm`, `chains`) |
+| `--fluid-preset` | `cavity` | LBM Fluid preset (`cavity`, `karman`, `convection`) |
 | `--script`  | —         | Run a Python script on startup (path or name from `~/.life-scripts/`) |
 | `--discover` | off      | Launch genetic algorithm rule discovery mode |
 | `--ga-generations` | 50 | Number of GA generations in discovery mode |
@@ -114,7 +118,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `B`       | Toggle Braille high-density rendering |
 | `T`       | Cycle topology (Torus → Klein Bottle → Möbius Strip → Bounded) |
 | `H`       | Toggle HashLife hyperspeed mode   |
-| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode; cycle Physarum presets in Physarum mode; cycle Sandpile presets in Sandpile mode; cycle DLA presets in DLA mode; cycle Forest Fire presets in Forest Fire mode; cycle Ising presets in Ising mode; cycle CCA presets in Cyclic CA mode; cycle Particle Life presets in Particle Life mode |
+| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode; cycle Physarum presets in Physarum mode; cycle Sandpile presets in Sandpile mode; cycle DLA presets in DLA mode; cycle Forest Fire presets in Forest Fire mode; cycle Ising presets in Ising mode; cycle CCA presets in Cyclic CA mode; cycle Particle Life presets in Particle Life mode; cycle LBM Fluid presets in Fluid mode |
 | `t` / `y` | Decrease / increase temperature in Ising Model mode |
 | `W`       | Enter a specific Wolfram rule number (0–255) in Elementary CA mode |
 | `G`       | Export history as animated GIF    |
@@ -205,6 +209,7 @@ All rules use Birth/Survival notation — a cell is born if it has exactly B nei
 | `sandpile`   | *(self-organized criticality)* | Abelian Sandpile — see [Sandpile](#abelian-sandpile) below |
 | `chimera`    | *(multi-rule zones)* | Multiple B/S rules on one grid — see [Chimera Grid](#chimera-grid--multi-rule-coexistence) below |
 | `particlelife` | *(continuous particles)* | Multi-species particle interactions — see [Particle Life](#particle-life--primordial-soup) below |
+| `fluid`        | *(lattice Boltzmann)* | D2Q9 fluid dynamics — see [LBM Fluid Dynamics](#lbm-fluid-dynamics--lattice-boltzmann-method) below |
 
 Use `--rule <preset>` or `--rule B.../S...` for custom rules. Press `R` at runtime to cycle through presets.
 
@@ -854,6 +859,58 @@ Particles are projected onto the display grid as solid blocks (`██`). Braill
 - **HashLife** — incompatible (continuous particles, not grid cells). Switching to Particle Life auto-deactivates HashLife.
 - **Split-screen** — fully supported. Full particle state is saved/restored for independent pane simulation.
 - **Randomize** (`r`) — re-scatters all particles and generates a new interaction matrix.
+
+## LBM Fluid Dynamics — Lattice Boltzmann Method
+
+The Lattice Boltzmann Method (LBM) simulates 2D incompressible fluid flow using the D2Q9 lattice with a BGK (Bhatnagar-Gross-Krook) collision operator. Unlike the other grid-based automata which track discrete cell states, LBM tracks 9 distribution functions per cell representing particle populations moving in each lattice direction. Macroscopic quantities (density, velocity) emerge from these mesoscopic distributions, producing realistic fluid behavior — vortex shedding, recirculation zones, and convective instabilities — all in the terminal.
+
+The governing update at each timestep:
+
+```
+f_i(x + e_i, t+1) = f_i(x, t) - (1/τ) · [f_i(x, t) - f_i^eq(x, t)]
+```
+
+where τ (relaxation time) controls viscosity, e_i are the 9 lattice velocities, and f_i^eq is the Maxwell-Boltzmann equilibrium distribution.
+
+### Starting LBM Fluid
+
+```bash
+python3 life.py --rule fluid                                # lid-driven cavity (default)
+python3 life.py --rule fluid --fluid-preset karman           # flow past a cylinder
+python3 life.py --rule fluid --fluid-preset convection       # thermal convection cells
+```
+
+### Presets
+
+| Preset | τ | Description |
+|--------|---|-------------|
+| `cavity` | 0.8 | Lid-driven cavity flow — top wall moves right, producing corner vortices and recirculation |
+| `karman` | 0.55 | Kármán vortex street — uniform inflow past a cylindrical obstacle sheds alternating vortices |
+| `convection` | 0.7 | Rayleigh-Bénard convection — hot bottom / cold top with buoyancy-driven convective rolls |
+
+### Rendering
+
+Visualization maps **vorticity** (curl of the velocity field) to color:
+
+| Vorticity | Color |
+|-----------|-------|
+| Strong clockwise | Blue / Cyan |
+| Quiescent | Dark / Black |
+| Strong counter-clockwise | Red / Magenta |
+
+This makes vortex structures, shear layers, and turbulent regions immediately visible.
+
+### Implementation
+
+- **Pure Python engine** — nested-loop collision, streaming, and boundary handling; slow but dependency-free
+- **NumPy vectorized engine** — fully broadcast array operations for collision, streaming via `np.roll`, and vectorized boundary conditions; automatically used when NumPy is available
+- **Boundary conditions** — bounce-back (no-slip) on solid obstacles, Zou-He velocity boundary for driven walls, periodic or inflow/outflow depending on preset
+
+### Interactions
+
+- **HashLife** — incompatible (continuous distributions, not discrete cells). Switching to Fluid mode auto-deactivates HashLife.
+- **Split-screen** — fully supported. Complete LBM state (distributions, density, velocity, obstacles, temperature) is saved/restored for independent pane simulation.
+- **Randomize** (`r`) — reinitializes the flow field to the current preset's initial conditions.
 
 ## Population Statistics Dashboard
 

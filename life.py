@@ -51,6 +51,7 @@ RULES = {
     "cca": {"b": set(), "s": set(), "name": "Cyclic CA (14-state)", "cca": True},
     "chimera": {"b": set(), "s": set(), "name": "Chimera Grid (Life|HighLife)", "chimera": True},
     "particlelife": {"b": set(), "s": set(), "name": "Particle Life (Primordial Soup)", "particlelife": True},
+    "fluid": {"b": set(), "s": set(), "name": "LBM Fluid (Lid-Driven Cavity)", "fluid": True},
 }
 
 RULE_NAMES = list(RULES.keys())
@@ -196,6 +197,11 @@ def _is_chimera(rule):
 def _is_particlelife(rule):
     """Check if the current rule is the Particle Life simulation."""
     return rule.get("particlelife", False)
+
+
+def _is_fluid(rule):
+    """Check if the current rule is the Lattice Boltzmann fluid simulation."""
+    return rule.get("fluid", False)
 
 
 # --- Wa-Tor Predator-Prey Ecosystem ---
@@ -3211,6 +3217,442 @@ def _pl_color(val):
     return species_colors[sp % len(species_colors)]
 
 
+# --- Lattice Boltzmann Method (LBM) D2Q9 Fluid Dynamics ---
+# Simulates 2D incompressible fluid flow using the BGK collision operator
+# on a D2Q9 lattice.  Presets include lid-driven cavity, Kármán vortex
+# street (flow past a cylinder), and Rayleigh-Bénard thermal convection.
+
+# D2Q9 lattice: 9 discrete velocity directions
+_LBM_EX = [0, 1, 0, -1,  0, 1, -1, -1,  1]
+_LBM_EY = [0, 0, 1,  0, -1, 1,  1, -1, -1]
+_LBM_W  = [4.0/9, 1.0/9, 1.0/9, 1.0/9, 1.0/9,
+           1.0/36, 1.0/36, 1.0/36, 1.0/36]
+_LBM_OPP = [0, 3, 4, 1, 2, 7, 8, 5, 6]  # opposite direction indices
+
+LBM_PRESETS = {
+    "cavity": {
+        "name": "Lid-Driven Cavity",
+        "tau": 0.8,
+        "lid_speed": 0.1,
+        "inflow_speed": 0.0,
+        "buoyancy": 0.0,
+        "obstacle": None,
+        "obstacle_r": 0.0,
+    },
+    "karman": {
+        "name": "Kármán Vortex Street",
+        "tau": 0.55,
+        "lid_speed": 0.0,
+        "inflow_speed": 0.08,
+        "obstacle": "cylinder",
+        "obstacle_r": 0.08,
+    },
+    "convection": {
+        "name": "Rayleigh-Bénard",
+        "tau": 0.7,
+        "lid_speed": 0.0,
+        "inflow_speed": 0.0,
+        "buoyancy": 0.0003,
+        "obstacle": None,
+        "obstacle_r": 0.0,
+    },
+}
+LBM_PRESET_NAMES = list(LBM_PRESETS.keys())
+
+# Module-level state
+_lbm_f = None           # distribution functions: list of 9 2D arrays [rows][cols]
+_lbm_rho = None         # density field
+_lbm_ux = None          # x-velocity field
+_lbm_uy = None          # y-velocity field
+_lbm_obstacle = None    # boolean obstacle mask (True = solid)
+_lbm_rows = 0
+_lbm_cols = 0
+_lbm_tau = 0.6
+_lbm_preset_idx = 0
+_lbm_lid_speed = 0.0
+_lbm_inflow_speed = 0.0
+_lbm_buoyancy = 0.0
+_lbm_temperature = None  # temperature field for convection
+
+
+def _lbm_feq(rho, ux, uy, i):
+    """Compute equilibrium distribution for direction i (scalar version)."""
+    eu = _LBM_EX[i] * ux + _LBM_EY[i] * uy
+    usq = ux * ux + uy * uy
+    return _LBM_W[i] * rho * (1.0 + 3.0 * eu + 4.5 * eu * eu - 1.5 * usq)
+
+
+def _lbm_init(rows, cols, preset_name=None):
+    """Initialize the LBM simulation."""
+    global _lbm_f, _lbm_rho, _lbm_ux, _lbm_uy, _lbm_obstacle
+    global _lbm_rows, _lbm_cols, _lbm_tau, _lbm_preset_idx
+    global _lbm_lid_speed, _lbm_inflow_speed, _lbm_buoyancy, _lbm_temperature
+
+    _lbm_rows, _lbm_cols = rows, cols
+
+    if preset_name is None:
+        preset_name = LBM_PRESET_NAMES[_lbm_preset_idx]
+    elif preset_name in LBM_PRESETS:
+        _lbm_preset_idx = LBM_PRESET_NAMES.index(preset_name)
+
+    preset = LBM_PRESETS[preset_name]
+    _lbm_tau = preset["tau"]
+    _lbm_lid_speed = preset.get("lid_speed", 0.0)
+    _lbm_inflow_speed = preset.get("inflow_speed", 0.0)
+    _lbm_buoyancy = preset.get("buoyancy", 0.0)
+
+    if _HAS_NUMPY:
+        _lbm_rho = np.ones((rows, cols), dtype=np.float64)
+        _lbm_ux = np.zeros((rows, cols), dtype=np.float64)
+        _lbm_uy = np.zeros((rows, cols), dtype=np.float64)
+        _lbm_obstacle = np.zeros((rows, cols), dtype=bool)
+
+        # Set up initial velocity for inflow presets
+        if _lbm_inflow_speed > 0:
+            _lbm_ux[:, :] = _lbm_inflow_speed
+
+        # Set up obstacle
+        if preset.get("obstacle") == "cylinder":
+            cy, cx = rows // 2, cols // 4
+            r = max(2, int(preset.get("obstacle_r", 0.08) * min(rows, cols)))
+            for y in range(rows):
+                for x in range(cols):
+                    if (x - cx) ** 2 + (y - cy) ** 2 <= r * r:
+                        _lbm_obstacle[y, x] = True
+
+        # Initialize distributions to equilibrium
+        _lbm_f = []
+        for i in range(9):
+            _lbm_f.append(_LBM_W[i] * _lbm_rho * (1.0 + 3.0 * (_LBM_EX[i] * _lbm_ux + _LBM_EY[i] * _lbm_uy)))
+
+        # Temperature field for convection
+        if _lbm_buoyancy > 0:
+            _lbm_temperature = np.zeros((rows, cols), dtype=np.float64)
+            _lbm_temperature[-1, :] = 1.0  # hot bottom
+            # Add small random perturbation to break symmetry
+            _lbm_temperature += np.random.uniform(-0.01, 0.01, (rows, cols))
+            _lbm_temperature[0, :] = 0.0
+            _lbm_temperature[-1, :] = 1.0
+        else:
+            _lbm_temperature = None
+    else:
+        # Pure Python initialization
+        _lbm_rho = [[1.0] * cols for _ in range(rows)]
+        _lbm_ux = [[0.0] * cols for _ in range(rows)]
+        _lbm_uy = [[0.0] * cols for _ in range(rows)]
+        _lbm_obstacle = [[False] * cols for _ in range(rows)]
+
+        if _lbm_inflow_speed > 0:
+            for r in range(rows):
+                for c in range(cols):
+                    _lbm_ux[r][c] = _lbm_inflow_speed
+
+        if preset.get("obstacle") == "cylinder":
+            cy, cx = rows // 2, cols // 4
+            r = max(2, int(preset.get("obstacle_r", 0.08) * min(rows, cols)))
+            for y in range(rows):
+                for x in range(cols):
+                    if (x - cx) ** 2 + (y - cy) ** 2 <= r * r:
+                        _lbm_obstacle[y][x] = True
+
+        _lbm_f = []
+        for i in range(9):
+            fi = [[0.0] * cols for _ in range(rows)]
+            for r in range(rows):
+                for c in range(cols):
+                    fi[r][c] = _lbm_feq(_lbm_rho[r][c], _lbm_ux[r][c], _lbm_uy[r][c], i)
+            _lbm_f.append(fi)
+
+        if _lbm_buoyancy > 0:
+            import random as _rng
+            _lbm_temperature = [[0.0] * cols for _ in range(rows)]
+            for c in range(cols):
+                _lbm_temperature[rows - 1][c] = 1.0
+            for r in range(1, rows - 1):
+                for c in range(cols):
+                    _lbm_temperature[r][c] = _rng.uniform(-0.01, 0.01)
+        else:
+            _lbm_temperature = None
+
+
+def _lbm_step():
+    """Advance LBM by one timestep (pure Python — slow but dependency-free)."""
+    global _lbm_f, _lbm_rho, _lbm_ux, _lbm_uy, _lbm_temperature
+    rows, cols = _lbm_rows, _lbm_cols
+    tau = _lbm_tau
+    inv_tau = 1.0 / tau
+
+    # --- Collision (BGK) ---
+    new_f = [[[0.0] * cols for _ in range(rows)] for _ in range(9)]
+    for r in range(rows):
+        for c in range(cols):
+            if _lbm_obstacle[r][c]:
+                continue
+            rho = 0.0
+            ux_val = 0.0
+            uy_val = 0.0
+            for i in range(9):
+                fi = _lbm_f[i][r][c]
+                rho += fi
+                ux_val += fi * _LBM_EX[i]
+                uy_val += fi * _LBM_EY[i]
+            if rho > 0:
+                ux_val /= rho
+                uy_val /= rho
+            # Buoyancy force (thermal convection)
+            if _lbm_temperature is not None:
+                uy_val -= _lbm_buoyancy * (_lbm_temperature[r][c] - 0.5)
+            _lbm_rho[r][c] = rho
+            _lbm_ux[r][c] = ux_val
+            _lbm_uy[r][c] = uy_val
+            for i in range(9):
+                feq = _lbm_feq(rho, ux_val, uy_val, i)
+                new_f[i][r][c] = _lbm_f[i][r][c] - inv_tau * (_lbm_f[i][r][c] - feq)
+
+    # --- Lid-driven cavity: top wall moves right ---
+    if _lbm_lid_speed > 0:
+        r = 0
+        for c in range(cols):
+            rho = 0.0
+            for i in range(9):
+                rho += new_f[i][r][c]
+            if rho <= 0:
+                rho = 1.0
+            for i in range(9):
+                new_f[i][r][c] = _lbm_feq(rho, _lbm_lid_speed, 0.0, i)
+
+    # --- Streaming ---
+    streamed = [[[0.0] * cols for _ in range(rows)] for _ in range(9)]
+    for i in range(9):
+        ex, ey = _LBM_EX[i], _LBM_EY[i]
+        for r in range(rows):
+            for c in range(cols):
+                nr = r + ey
+                nc = c + ex
+                # Bounce-back at domain boundaries (except periodic for karman inflow)
+                if nr < 0 or nr >= rows or nc < 0 or nc >= cols:
+                    if _lbm_inflow_speed > 0:
+                        # Periodic left-right for Kármán
+                        nr = nr % rows
+                        nc = nc % cols
+                        streamed[i][nr][nc] = new_f[i][r][c]
+                    else:
+                        # Bounce back
+                        streamed[_LBM_OPP[i]][r][c] += new_f[i][r][c]
+                elif _lbm_obstacle[nr][nc]:
+                    # Bounce back off obstacle
+                    streamed[_LBM_OPP[i]][r][c] += new_f[i][r][c]
+                else:
+                    streamed[i][nr][nc] = new_f[i][r][c]
+
+    _lbm_f = streamed
+
+    # --- Inflow boundary (Kármán): reset left column to equilibrium ---
+    if _lbm_inflow_speed > 0:
+        for r in range(rows):
+            for i in range(9):
+                _lbm_f[i][r][0] = _lbm_feq(1.0, _lbm_inflow_speed, 0.0, i)
+
+    # --- Advect temperature (simple upwind) ---
+    if _lbm_temperature is not None:
+        new_t = [[0.0] * cols for _ in range(rows)]
+        for r in range(rows):
+            for c in range(cols):
+                # Simple diffusion + advection
+                t_sum = 0.0
+                cnt = 0
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        rr = min(max(r + dr, 0), rows - 1)
+                        cc = min(max(c + dc, 0), cols - 1)
+                        t_sum += _lbm_temperature[rr][cc]
+                        cnt += 1
+                new_t[r][c] = t_sum / cnt
+        # Enforce boundary conditions
+        for c in range(cols):
+            new_t[0][c] = 0.0       # cold top
+            new_t[rows - 1][c] = 1.0  # hot bottom
+        _lbm_temperature = new_t
+
+
+def _lbm_step_numpy():
+    """Advance LBM by one timestep using NumPy vectorization."""
+    global _lbm_f, _lbm_rho, _lbm_ux, _lbm_uy, _lbm_temperature
+    rows, cols = _lbm_rows, _lbm_cols
+    tau = _lbm_tau
+    inv_tau = 1.0 / tau
+
+    # Stack distributions for efficient computation
+    f = np.array(_lbm_f)  # shape (9, rows, cols)
+
+    # Compute macroscopic quantities
+    rho = np.sum(f, axis=0)
+    rho = np.where(rho < 1e-10, 1e-10, rho)  # avoid div by zero
+    ux = np.sum(f * np.array(_LBM_EX).reshape(9, 1, 1), axis=0) / rho
+    uy = np.sum(f * np.array(_LBM_EY).reshape(9, 1, 1), axis=0) / rho
+
+    # Zero velocity inside obstacles
+    obs = np.array(_lbm_obstacle) if not isinstance(_lbm_obstacle, np.ndarray) else _lbm_obstacle
+    ux[obs] = 0.0
+    uy[obs] = 0.0
+
+    # Buoyancy for thermal convection
+    if _lbm_temperature is not None:
+        temp = np.array(_lbm_temperature) if not isinstance(_lbm_temperature, np.ndarray) else _lbm_temperature
+        uy -= _lbm_buoyancy * (temp - 0.5)
+        uy[obs] = 0.0
+
+    # Lid-driven cavity: impose velocity at top wall
+    if _lbm_lid_speed > 0:
+        ux[0, :] = _lbm_lid_speed
+        uy[0, :] = 0.0
+
+    _lbm_rho = rho
+    _lbm_ux = ux
+    _lbm_uy = uy
+
+    # Compute equilibrium distributions
+    ex = np.array(_LBM_EX).reshape(9, 1, 1)
+    ey = np.array(_LBM_EY).reshape(9, 1, 1)
+    w = np.array(_LBM_W).reshape(9, 1, 1)
+    eu = ex * ux[np.newaxis] + ey * uy[np.newaxis]
+    usq = ux * ux + uy * uy
+    feq = w * rho[np.newaxis] * (1.0 + 3.0 * eu + 4.5 * eu * eu - 1.5 * usq[np.newaxis])
+
+    # BGK collision
+    f_post = f - inv_tau * (f - feq)
+
+    # Streaming
+    f_new = np.zeros_like(f_post)
+    opp = np.array(_LBM_OPP)
+
+    for i in range(9):
+        ex_i, ey_i = _LBM_EX[i], _LBM_EY[i]
+        if _lbm_inflow_speed > 0:
+            # Periodic boundaries for Kármán flow
+            f_new[i] = np.roll(np.roll(f_post[i], ey_i, axis=0), ex_i, axis=1)
+        else:
+            # Interior streaming with bounce-back at walls
+            f_new[i] = np.roll(np.roll(f_post[i], ey_i, axis=0), ex_i, axis=1)
+            # Bounce-back at boundaries: top/bottom walls
+            if ey_i == 1:
+                f_new[opp[i], 0, :] += f_post[i, rows - 1, :]
+                f_new[i, 0, :] = 0
+            elif ey_i == -1:
+                f_new[opp[i], rows - 1, :] += f_post[i, 0, :]
+                f_new[i, rows - 1, :] = 0
+            # Left/right walls
+            if ex_i == 1:
+                f_new[opp[i], :, 0] += f_post[i, :, cols - 1]
+                f_new[i, :, 0] = 0
+            elif ex_i == -1:
+                f_new[opp[i], :, cols - 1] += f_post[i, :, 0]
+                f_new[i, :, cols - 1] = 0
+
+    # Bounce-back at obstacle nodes
+    for i in range(9):
+        mask = obs
+        # Where obstacle: reflected distribution goes back to source cell
+        reflected = np.roll(np.roll(mask, -_LBM_EY[i], axis=0), -_LBM_EX[i], axis=1)
+        # Nodes that streamed INTO an obstacle get bounced back
+        bounce_src = obs & True  # obstacle cells
+        f_new[opp[i]][np.roll(np.roll(bounce_src, -_LBM_EY[i], axis=0), -_LBM_EX[i], axis=1)] += \
+            f_post[i][np.roll(np.roll(bounce_src, -_LBM_EY[i], axis=0), -_LBM_EX[i], axis=1)]
+        f_new[i][obs] = 0
+
+    # Inflow: reset left column to equilibrium
+    if _lbm_inflow_speed > 0:
+        for i in range(9):
+            eu_val = _LBM_EX[i] * _lbm_inflow_speed
+            f_new[i, :, 0] = _LBM_W[i] * (1.0 + 3.0 * eu_val + 4.5 * eu_val * eu_val - 1.5 * _lbm_inflow_speed * _lbm_inflow_speed)
+
+    _lbm_f = [f_new[i] for i in range(9)]
+
+    # Advect temperature
+    if _lbm_temperature is not None:
+        temp = np.array(_lbm_temperature) if not isinstance(_lbm_temperature, np.ndarray) else _lbm_temperature
+        # Diffusion via averaging with neighbors
+        kernel = np.array([[1, 1, 1], [1, 1, 1], [1, 1, 1]], dtype=np.float64) / 9.0
+        from scipy.signal import convolve2d as _conv2d
+        new_temp = _conv2d(temp, kernel, mode='same', boundary='fill', fillvalue=0.5)
+        new_temp[0, :] = 0.0
+        new_temp[-1, :] = 1.0
+        _lbm_temperature = new_temp
+
+
+def _lbm_to_grid(rows, cols):
+    """Convert LBM state to a display grid (0-100 values).
+
+    Uses vorticity (curl of velocity) for the most visually striking output.
+    """
+    grid = [[0] * cols for _ in range(rows)]
+
+    if _HAS_NUMPY:
+        ux = _lbm_ux if isinstance(_lbm_ux, np.ndarray) else np.array(_lbm_ux)
+        uy = _lbm_uy if isinstance(_lbm_uy, np.ndarray) else np.array(_lbm_uy)
+        obs = _lbm_obstacle if isinstance(_lbm_obstacle, np.ndarray) else np.array(_lbm_obstacle)
+
+        # Compute vorticity: duy/dx - dux/dy (central differences)
+        duy_dx = np.roll(uy, -1, axis=1) - np.roll(uy, 1, axis=1)
+        dux_dy = np.roll(ux, -1, axis=0) - np.roll(ux, 1, axis=0)
+        vorticity = duy_dx - dux_dy
+
+        # Map to display range: center at 50, scale to fill 0-100
+        v_max = max(np.max(np.abs(vorticity)), 1e-8)
+        display = 50.0 + 50.0 * vorticity / v_max
+        display = np.clip(display, 1, 100).astype(int)
+        display[obs] = 0  # obstacles show as empty
+
+        for r in range(min(rows, display.shape[0])):
+            for c in range(min(cols, display.shape[1])):
+                grid[r][c] = int(display[r, c])
+    else:
+        # Pure Python vorticity computation
+        v_max = 1e-8
+        vort = [[0.0] * cols for _ in range(rows)]
+        for r in range(rows):
+            for c in range(cols):
+                if _lbm_obstacle[r][c]:
+                    continue
+                r_up = max(0, r - 1)
+                r_dn = min(rows - 1, r + 1)
+                c_lt = max(0, c - 1)
+                c_rt = min(cols - 1, c + 1)
+                duy_dx = _lbm_uy[r][c_rt] - _lbm_uy[r][c_lt]
+                dux_dy = _lbm_ux[r_dn][c] - _lbm_ux[r_up][c]
+                v = duy_dx - dux_dy
+                vort[r][c] = v
+                if abs(v) > v_max:
+                    v_max = abs(v)
+        for r in range(rows):
+            for c in range(cols):
+                if _lbm_obstacle[r][c]:
+                    grid[r][c] = 0
+                else:
+                    grid[r][c] = max(1, min(100, int(50.0 + 50.0 * vort[r][c] / v_max)))
+    return grid
+
+
+def _lbm_color(val):
+    """Map an LBM vorticity grid value (0-100) to a curses color pair.
+
+    0 = obstacle (dark), 50 = quiescent (blue), <50 = CW vorticity (cyan/green),
+    >50 = CCW vorticity (red/magenta).
+    """
+    if val <= 0:
+        return 19      # near-black — obstacle
+    elif val <= 20:
+        return 5       # cyan — strong CW rotation
+    elif val <= 40:
+        return 6        # blue — mild CW
+    elif val <= 60:
+        return 19       # near-black — quiescent
+    elif val <= 80:
+        return 13       # red — mild CCW
+    else:
+        return 7        # magenta — strong CCW rotation
+
+
 def parse_rule_string(rule_str):
     """Parse a rule string like 'B36/S23' into birth/survival sets."""
     rule_str = rule_str.upper().replace(" ", "")
@@ -4051,6 +4493,13 @@ def place_pattern(grid, name, row_off=None, col_off=None):
 def step(grid, rule=None):
     if rule is None:
         rule = RULES["life"]
+    if _is_fluid(rule):
+        rows, cols = len(grid), len(grid[0])
+        if _HAS_NUMPY:
+            _lbm_step_numpy()
+        else:
+            _lbm_step()
+        return _lbm_to_grid(rows, cols)
     if _is_particlelife(rule):
         rows, cols = len(grid), len(grid[0])
         if _HAS_NUMPY:
@@ -4687,7 +5136,7 @@ def _render_braille_grid(grid, rows, cols, term_rows, term_cols):
     return lines
 
 
-def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=False, wator=False, fallingsand=False, sandpile=False, dla=False, particlelife=False):
+def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=False, wator=False, fallingsand=False, sandpile=False, dla=False, particlelife=False, fluid=False):
     """Pick the curses color pair for a Braille cell based on majority vote.
 
     Examines the 2×4 block of grid cells that map to terminal position (tr, tc)
@@ -4702,6 +5151,9 @@ def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=Fals
                 age = grid[gr][gc]
                 if gs:
                     cp = _grayscott_color(age)
+                    counts[cp] = counts.get(cp, 0) + 1
+                elif fluid:
+                    cp = _lbm_color(age)
                     counts[cp] = counts.get(cp, 0) + 1
                 elif particlelife:
                     if age:
@@ -5244,6 +5696,7 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
     ff = _is_forestfire(rule)
     ig = _is_ising(rule)
     cc = _is_cca(rule)
+    fl = _is_fluid(rule)
 
     # Initialize grid
     grid = make_grid(rows, cols)
@@ -5277,6 +5730,9 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
     elif gs:
         _gs_init(rows, cols)
         grid = _gs_to_grid(rows, cols)
+    elif fl:
+        _lbm_init(rows, cols)
+        grid = _lbm_to_grid(rows, cols)
     elif ww and not load_path:
         place_wireworld_pattern(grid, "ww_clock")
     else:
@@ -6104,6 +6560,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         cca = _is_cca(rule)
         chimera = _is_chimera(rule)
         particlelife = _is_particlelife(rule)
+        fluid = _is_fluid(rule)
 
         # Track population
         pop = _count_population(grid)
@@ -6172,7 +6629,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     ch = braille_lines[tr][tc]
                     if ch == chr(_BRAILLE_BASE):
                         continue  # empty — skip for speed
-                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia or physarum, turmite=turmite, wator=wator, fallingsand=fallingsand, sandpile=sandpile, dla=dla, particlelife=particlelife)
+                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia or physarum, turmite=turmite, wator=wator, fallingsand=fallingsand, sandpile=sandpile, dla=dla, particlelife=particlelife, fluid=fluid)
                     try:
                         stdscr.addstr(tr, tc, ch, curses.color_pair(cp))
                     except curses.error:
@@ -6203,6 +6660,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                         attr = curses.color_pair(8)
                     elif detected_cells and (r, c) in detected_cells:
                         attr = curses.color_pair(12)
+                    elif fluid:
+                        attr = curses.color_pair(_lbm_color(age))
+                        cell_str = "\u2588\u2588"
                     elif forestfire:
                         attr = curses.color_pair(_ff_color(age))
                         cell_str = "\u2588\u2588" if age else "  "
@@ -6711,6 +7171,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_cca = cca
                 was_chimera = chimera
                 was_pl = particlelife
+                was_fluid = fluid
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -6731,10 +7192,11 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_cca = _is_cca(rule)
                 new_chimera = _is_chimera(rule)
                 new_pl = _is_particlelife(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca or new_chimera or new_pl:
+                new_fluid = _is_fluid(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca or new_chimera or new_pl or new_fluid:
                     hashlife_active = False
                 # Mode transition: clear grid and re-initialize
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca or was_chimera != new_chimera or was_pl != new_pl:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca or was_chimera != new_chimera or was_pl != new_pl or was_fluid != new_fluid:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -6777,6 +7239,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_pl:
                         _pl_init(rows, cols)
                         grid = _pl_to_grid(rows, cols)
+                    elif new_fluid:
+                        _lbm_init(rows, cols)
+                        grid = _lbm_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -6886,6 +7351,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 elif chimera:
                     _chimera_init(rows, cols)
                     grid = _chimera_to_grid(rows, cols)
+                elif fluid:
+                    _lbm_init(rows, cols)
+                    grid = _lbm_to_grid(rows, cols)
                 else:
                     import random
                     for r2 in range(rows):
@@ -6914,6 +7382,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_cca = cca
                 was_chimera = chimera
                 was_pl = particlelife
+                was_fluid = fluid
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -6934,9 +7403,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_cca = _is_cca(rule)
                 new_chimera = _is_chimera(rule)
                 new_pl = _is_particlelife(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca or new_chimera or new_pl:
+                new_fluid = _is_fluid(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising or new_cca or new_chimera or new_pl or new_fluid:
                     hashlife_active = False
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca or was_chimera != new_chimera or was_pl != new_pl:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising or was_cca != new_cca or was_chimera != new_chimera or was_pl != new_pl or was_fluid != new_fluid:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -6982,6 +7452,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_pl:
                         _pl_init(rows, cols)
                         grid = _pl_to_grid(rows, cols)
+                    elif new_fluid:
+                        _lbm_init(rows, cols)
+                        grid = _lbm_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -7434,6 +7907,30 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 hist_idx = 0
                 browsing_history = False
                 pop_history = []
+            elif key == ord("<") and fluid:
+                # Previous LBM Fluid preset
+                _lbm_preset_idx = (_lbm_preset_idx - 1) % len(LBM_PRESET_NAMES)
+                preset_name = LBM_PRESET_NAMES[_lbm_preset_idx]
+                rule["name"] = f"LBM Fluid ({LBM_PRESETS[preset_name]['name']})"
+                _lbm_init(rows, cols, preset_name)
+                grid = _lbm_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord(">") and fluid:
+                # Next LBM Fluid preset
+                _lbm_preset_idx = (_lbm_preset_idx + 1) % len(LBM_PRESET_NAMES)
+                preset_name = LBM_PRESET_NAMES[_lbm_preset_idx]
+                rule["name"] = f"LBM Fluid ({LBM_PRESETS[preset_name]['name']})"
+                _lbm_init(rows, cols, preset_name)
+                grid = _lbm_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
             elif key == ord("W") and eca:
                 # Enter a specific ECA rule number (0-255)
                 paused = True
@@ -7782,6 +8279,22 @@ def _save_module_state(rule):
             "_pl_cols": _pl_cols,
             "_pl_preset_idx": _pl_preset_idx,
         })
+    elif _is_fluid(rule):
+        state.update({
+            "_lbm_f": copy.deepcopy(_lbm_f),
+            "_lbm_rho": copy.deepcopy(_lbm_rho),
+            "_lbm_ux": copy.deepcopy(_lbm_ux),
+            "_lbm_uy": copy.deepcopy(_lbm_uy),
+            "_lbm_obstacle": copy.deepcopy(_lbm_obstacle),
+            "_lbm_rows": _lbm_rows,
+            "_lbm_cols": _lbm_cols,
+            "_lbm_tau": _lbm_tau,
+            "_lbm_preset_idx": _lbm_preset_idx,
+            "_lbm_lid_speed": _lbm_lid_speed,
+            "_lbm_inflow_speed": _lbm_inflow_speed,
+            "_lbm_buoyancy": _lbm_buoyancy,
+            "_lbm_temperature": copy.deepcopy(_lbm_temperature),
+        })
     return state
 
 
@@ -7930,10 +8443,29 @@ def _restore_module_state(rule, state):
         _pl_rows = state["_pl_rows"]
         _pl_cols = state["_pl_cols"]
         _pl_preset_idx = state["_pl_preset_idx"]
+    elif _is_fluid(rule):
+        global _lbm_f, _lbm_rho, _lbm_ux, _lbm_uy, _lbm_obstacle
+        global _lbm_rows, _lbm_cols, _lbm_tau, _lbm_preset_idx
+        global _lbm_lid_speed, _lbm_inflow_speed, _lbm_buoyancy, _lbm_temperature
+        _lbm_f = state["_lbm_f"]
+        _lbm_rho = state["_lbm_rho"]
+        _lbm_ux = state["_lbm_ux"]
+        _lbm_uy = state["_lbm_uy"]
+        _lbm_obstacle = state["_lbm_obstacle"]
+        _lbm_rows = state["_lbm_rows"]
+        _lbm_cols = state["_lbm_cols"]
+        _lbm_tau = state["_lbm_tau"]
+        _lbm_preset_idx = state["_lbm_preset_idx"]
+        _lbm_lid_speed = state["_lbm_lid_speed"]
+        _lbm_inflow_speed = state["_lbm_inflow_speed"]
+        _lbm_buoyancy = state["_lbm_buoyancy"]
+        _lbm_temperature = state["_lbm_temperature"]
 
 
 def _cell_color_pair(age, rule):
     """Return the curses color-pair number for a cell value under *rule*."""
+    if _is_fluid(rule):
+        return _lbm_color(age)
     if _is_particlelife(rule):
         return _pl_color(age)
     if _is_forestfire(rule):
@@ -7963,6 +8495,8 @@ def _cell_color_pair(age, rule):
 
 def _cell_str(age, rule):
     """Return the two-char display string for a cell value under *rule*."""
+    if _is_fluid(rule):
+        return "\u2588\u2588"
     if _is_particlelife(rule):
         return "\u2588\u2588" if age else "  "
     if _is_ising(rule):
@@ -9025,6 +9559,13 @@ def main():
              "Options: " + ", ".join(PARTICLELIFE_PRESETS.keys()),
     )
     parser.add_argument(
+        "--fluid-preset",
+        choices=list(LBM_PRESETS.keys()),
+        default="cavity",
+        help="LBM Fluid preset when --rule fluid (default: cavity). "
+             "Options: " + ", ".join(LBM_PRESETS.keys()),
+    )
+    parser.add_argument(
         "--discover",
         action="store_true",
         default=False,
@@ -9102,7 +9643,7 @@ def main():
     )
     args = parser.parse_args()
 
-    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx, _fs_preset_idx, _sp_preset_idx, _dla_preset_idx, _ff_preset_idx, _chimera_preset_idx, _pl_preset_idx
+    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx, _fs_preset_idx, _sp_preset_idx, _dla_preset_idx, _ff_preset_idx, _chimera_preset_idx, _pl_preset_idx, _lbm_preset_idx
 
     # Headless batch-render mode: output PNG frames without terminal UI
     if args.render is not None:
@@ -9218,6 +9759,9 @@ def main():
             elif _is_particlelife(rule):
                 _pl_init(r, c)
                 g = _pl_to_grid(r, c)
+            elif _is_fluid(rule):
+                _lbm_init(r, c)
+                g = _lbm_to_grid(r, c)
             else:
                 place_pattern(g, args.pattern)
             return g
@@ -9399,6 +9943,15 @@ def main():
             rule["name"] = f"Particle Life ({preset['name']})"
         _pl_init(args.rows, args.cols, pl_preset_name)
         grid = _pl_to_grid(args.rows, args.cols)
+    elif args.rule.lower() == "fluid":
+        # Lattice Boltzmann fluid dynamics
+        fluid_preset_name = args.fluid_preset
+        if fluid_preset_name in LBM_PRESETS:
+            _lbm_preset_idx = LBM_PRESET_NAMES.index(fluid_preset_name)
+            preset = LBM_PRESETS[fluid_preset_name]
+            rule["name"] = f"LBM Fluid ({preset['name']})"
+        _lbm_init(args.rows, args.cols, fluid_preset_name)
+        grid = _lbm_to_grid(args.rows, args.cols)
     elif args.rule.lower() == "sandpile":
         # Abelian Sandpile self-organized criticality
         sp_preset_name = args.sandpile_preset
