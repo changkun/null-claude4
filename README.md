@@ -42,6 +42,7 @@ python3 life.py --script ~/my_script.py            # run a script from a file pa
 | `R`       | Cycle to next ruleset             |
 | `e`       | Enter editor mode (auto-pauses)   |
 | `g`       | Toggle population stats panel     |
+| `d`       | Toggle pattern detection overlay  |
 | `L`       | Load and run a script             |
 | `[`       | Rewind one generation (auto-pauses) |
 | `]`       | Forward one generation through history |
@@ -64,6 +65,7 @@ Press `e` to enter an interactive cell editor. The simulation pauses and a curso
 | `c`             | Clear the entire grid     |
 | `R`             | Cycle to next ruleset     |
 | `g`             | Toggle population stats panel |
+| `d`             | Toggle pattern detection overlay |
 | `e`             | Exit editor, stay paused  |
 | `q`             | Quit                      |
 
@@ -152,6 +154,28 @@ The editor includes a full clipboard system for working with rectangular regions
 - **Paste** (`p`) positions a preview at the cursor — move it around, **rotate** (`>`/`<`) 90° in either direction, or **flip** (`f`/`F`) horizontally/vertically before confirming with `Enter`.
 - **Pattern stamps** (`P`) lets you load any built-in pattern directly into the clipboard for placement.
 - The clipboard persists across paste operations, so you can stamp the same pattern multiple times. Combine with save/load to build a reusable `.cells` snippet library.
+
+## Pattern Recognition
+
+Press `d` to toggle real-time pattern detection. The recognition engine uses connected component analysis with 8-connectivity flood fill to isolate structures, then matches each component against a catalog of known patterns under all D4 symmetry transformations (4 rotations × 2 reflections).
+
+### Recognized Patterns
+
+| Category     | Patterns                                  |
+|--------------|-------------------------------------------|
+| Still lifes  | block, beehive, loaf, boat, tub, pond     |
+| Oscillators  | blinker, toad, beacon, pulsar             |
+| Spaceships   | glider, LWSS                              |
+
+Oscillators and spaceships are cataloged across multiple phases so they're identified regardless of which generation you're viewing.
+
+### Display
+
+- **Grid overlay** — detected pattern cells are highlighted in yellow, with the pattern name labeled above each instance.
+- **Stats panel** — when both `g` (stats) and `d` (detect) are active, a "DETECTED PATTERNS" section appears in the stats panel showing counts (e.g., `3× glider, 2× block`), sorted by frequency.
+- **Status bar** — shows a `DETECT` indicator when detection is enabled.
+
+Connected components larger than 50 cells are skipped to keep detection fast on busy grids.
 
 ## Multiplayer
 

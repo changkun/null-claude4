@@ -777,12 +777,143 @@ def _age_color(age):
         return 7   # magenta — ancient
 
 
+# --- Pattern Recognition ---
+
+
+def _normalize_cells(cells):
+    """Normalize cell coordinates to start at (0,0), return as frozenset."""
+    if not cells:
+        return frozenset()
+    min_r = min(r for r, c in cells)
+    min_c = min(c for r, c in cells)
+    return frozenset((r - min_r, c - min_c) for r, c in cells)
+
+
+def _pattern_d4_variants(cells):
+    """Generate all D4 symmetry variants (rotations + reflections) of a pattern."""
+    variants = set()
+    coords = list(cells)
+    for _ in range(4):
+        norm = _normalize_cells(coords)
+        variants.add(norm)
+        reflected = [(r, -c) for r, c in coords]
+        variants.add(_normalize_cells(reflected))
+        coords = [(c, -r) for r, c in coords]
+    return variants
+
+
+def _build_recognition_catalog():
+    """Build a lookup table: frozenset of normalized coords -> pattern name."""
+    pattern_defs = {
+        # Still lifes
+        "block": [[(0, 0), (0, 1), (1, 0), (1, 1)]],
+        "beehive": [[(0, 1), (0, 2), (1, 0), (1, 3), (2, 1), (2, 2)]],
+        "loaf": [[(0, 1), (0, 2), (1, 0), (1, 3), (2, 1), (2, 3), (3, 2)]],
+        "boat": [[(0, 0), (0, 1), (1, 0), (1, 2), (2, 1)]],
+        "tub": [[(0, 1), (1, 0), (1, 2), (2, 1)]],
+        "pond": [[(0, 1), (0, 2), (1, 0), (1, 3), (2, 0), (2, 3), (3, 1), (3, 2)]],
+        # Oscillators (all phases)
+        "blinker": [
+            [(0, 0), (0, 1), (0, 2)],
+        ],
+        "toad": [
+            [(0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 2)],
+            [(0, 2), (1, 0), (1, 3), (2, 0), (2, 3), (3, 1)],
+        ],
+        "beacon": [
+            [(0, 0), (0, 1), (1, 0), (1, 1), (2, 2), (2, 3), (3, 2), (3, 3)],
+            [(0, 0), (0, 1), (1, 0), (2, 3), (3, 2), (3, 3)],
+        ],
+        "pulsar": [
+            # Phase 1 only (period-3, D4-symmetric)
+            [(0, 2), (0, 3), (0, 4), (0, 8), (0, 9), (0, 10),
+             (2, 0), (2, 5), (2, 7), (2, 12),
+             (3, 0), (3, 5), (3, 7), (3, 12),
+             (4, 0), (4, 5), (4, 7), (4, 12),
+             (5, 2), (5, 3), (5, 4), (5, 8), (5, 9), (5, 10),
+             (7, 2), (7, 3), (7, 4), (7, 8), (7, 9), (7, 10),
+             (8, 0), (8, 5), (8, 7), (8, 12),
+             (9, 0), (9, 5), (9, 7), (9, 12),
+             (10, 0), (10, 5), (10, 7), (10, 12),
+             (12, 2), (12, 3), (12, 4), (12, 8), (12, 9), (12, 10)],
+        ],
+        # Spaceships (all 4 phases)
+        "glider": [
+            [(0, 1), (1, 2), (2, 0), (2, 1), (2, 2)],
+            [(0, 0), (0, 2), (1, 1), (1, 2), (2, 1)],
+            [(0, 2), (1, 0), (1, 2), (2, 1), (2, 2)],
+            [(0, 0), (1, 1), (1, 2), (2, 0), (2, 1)],
+        ],
+        "LWSS": [
+            [(0, 1), (0, 4), (1, 0), (2, 0), (2, 4), (3, 0), (3, 1), (3, 2), (3, 3)],
+        ],
+    }
+    catalog = {}
+    for name, phases in pattern_defs.items():
+        for phase in phases:
+            for variant in _pattern_d4_variants(phase):
+                if variant not in catalog:
+                    catalog[variant] = name
+    return catalog
+
+
+_PATTERN_CATALOG = _build_recognition_catalog()
+
+
+def _detect_patterns(grid):
+    """Detect known patterns via connected component analysis (no wrapping).
+
+    Returns dict: pattern_name -> list of (min_r, min_c, h, w, cell_set).
+    """
+    rows, cols = len(grid), len(grid[0])
+    visited = [[False] * cols for _ in range(rows)]
+    results = {}
+
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r][c] and not visited[r][c]:
+                component = []
+                stack = [(r, c)]
+                while stack:
+                    cr, cc = stack.pop()
+                    if visited[cr][cc]:
+                        continue
+                    visited[cr][cc] = True
+                    component.append((cr, cc))
+                    for dr in (-1, 0, 1):
+                        for dc in (-1, 0, 1):
+                            if dr == 0 and dc == 0:
+                                continue
+                            nr, nc = cr + dr, cc + dc
+                            if 0 <= nr < rows and 0 <= nc < cols and not visited[nr][nc] and grid[nr][nc]:
+                                stack.append((nr, nc))
+
+                if len(component) > 50:
+                    continue
+
+                norm = _normalize_cells(component)
+                name = _PATTERN_CATALOG.get(norm)
+                if name:
+                    min_r = min(cr for cr, cc in component)
+                    min_c = min(cc for cr, cc in component)
+                    max_r = max(cr for cr, cc in component)
+                    max_c = max(cc for cr, cc in component)
+                    if name not in results:
+                        results[name] = []
+                    results[name].append((min_r, min_c,
+                                          max_r - min_r + 1,
+                                          max_c - min_c + 1,
+                                          set(component)))
+
+    return results
+
+
 def _count_population(grid):
     """Count the number of live cells in the grid."""
     return sum(1 for row in grid for cell in row if cell)
 
 
-def _draw_stats_panel(stdscr, pop_history, generation, panel_width, max_y, max_x):
+def _draw_stats_panel(stdscr, pop_history, generation, panel_width, max_y, max_x, detected_patterns=None):
     """Draw the population statistics side panel."""
     panel_x = max_x - panel_width
     chart_height = max(max_y - 12, 5)  # Reserve rows for stats below chart
@@ -888,6 +1019,38 @@ def _draw_stats_panel(stdscr, pop_history, generation, panel_width, max_y, max_x
         stdscr.addstr(chart_start_y + chart_height - 1, panel_x + 2 + chart_w, "0", curses.color_pair(2))
     except curses.error:
         pass
+
+    # Detected patterns section
+    if detected_patterns:
+        pat_y = chart_start_y + chart_height + 1
+        if pat_y < max_y - 2:
+            try:
+                stdscr.addstr(pat_y, panel_x + 1, " DETECTED PATTERNS ",
+                              curses.color_pair(12) | curses.A_REVERSE | curses.A_BOLD)
+            except curses.error:
+                pass
+            pat_y += 1
+            # Sort by count descending
+            sorted_pats = sorted(detected_patterns.items(), key=lambda x: -len(x[1]))
+            total = sum(len(v) for v in detected_patterns.values())
+            try:
+                stdscr.addstr(pat_y, panel_x + 1,
+                              f"Total: {total} structure{'s' if total != 1 else ''}"[:panel_width - 2],
+                              curses.color_pair(2))
+            except curses.error:
+                pass
+            pat_y += 1
+            for name, instances in sorted_pats:
+                if pat_y >= max_y - 1:
+                    break
+                count = len(instances)
+                line = f"  {count}\u00d7 {name}"
+                try:
+                    stdscr.addstr(pat_y, panel_x + 1, line[:panel_width - 2],
+                                  curses.color_pair(12))
+                except curses.error:
+                    pass
+                pat_y += 1
 
 
 def _extract_region(grid, r1, c1, r2, c2):
@@ -1120,6 +1283,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
     curses.init_pair(9, curses.COLOR_BLACK, curses.COLOR_MAGENTA) # paste preview
     curses.init_pair(10, curses.COLOR_BLACK, curses.COLOR_RED)    # remote cursor on dead
     curses.init_pair(11, curses.COLOR_WHITE, curses.COLOR_RED)    # remote cursor on live
+    curses.init_pair(12, curses.COLOR_YELLOW, -1)                # detected pattern highlight
 
     # Multiplayer state
     mp = network is not None
@@ -1133,6 +1297,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
     paused = False
     editing = False
     show_stats = False
+    detect_enabled = False
     cursor_r, cursor_c = rows // 2, cols // 2
     delay = speed
     pop_history = []
@@ -1169,6 +1334,15 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
             pop_history.append(pop)
             if len(pop_history) > max_pop_history:
                 pop_history.pop(0)
+
+        # Pattern detection
+        detected = {}
+        detected_cells = set()
+        if detect_enabled:
+            detected = _detect_patterns(grid)
+            for instances in detected.values():
+                for (_mr, _mc, _h, _w, cells) in instances:
+                    detected_cells.update(cells)
 
         stdscr.erase()
         max_y, max_x = stdscr.getmaxyx()
@@ -1213,6 +1387,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     attr = curses.color_pair(9)
                 elif selecting and sel_min_r <= r <= sel_max_r and sel_min_c <= c <= sel_max_c:
                     attr = curses.color_pair(8)
+                elif detected_cells and (r, c) in detected_cells:
+                    attr = curses.color_pair(12)
                 else:
                     attr = curses.color_pair(_age_color(age)) if age else curses.color_pair(1)
                 try:
@@ -1220,9 +1396,25 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 except curses.error:
                     pass
 
+        # Draw pattern labels on grid
+        if detect_enabled and detected:
+            for name, instances in detected.items():
+                for (mr, mc, h, w, _cells) in instances:
+                    label_r = mr - 1 if mr > 0 else mr + h
+                    label_c = mc * 2
+                    if 0 <= label_r < vis_rows and label_c < grid_max_x - 1:
+                        disp = name[:max((grid_max_x - label_c) // 1, 0)]
+                        if disp:
+                            try:
+                                stdscr.addstr(label_r, label_c, disp,
+                                              curses.color_pair(12) | curses.A_BOLD)
+                            except curses.error:
+                                pass
+
         # Draw stats panel if enabled
         if show_stats and max_x > panel_width + 20:
-            _draw_stats_panel(stdscr, pop_history, generation, panel_width, max_y, max_x)
+            _draw_stats_panel(stdscr, pop_history, generation, panel_width, max_y, max_x,
+                              detected_patterns=detected if detect_enabled else None)
 
         # Status bar
         rule_label = rule.get("name", "Custom")
@@ -1252,7 +1444,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         else:
             pop_str = f" | Pop {pop}" if not show_stats else ""
             state_str = 'REWOUND' if browsing_history else ('PAUSED' if paused else 'Running')
-            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{challenge_str}{script_str} | [space]pause [e]dit [g]raph [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [q]uit"
+            detect_str = " | DETECT" if detect_enabled else ""
+            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{challenge_str}{script_str} | [space]pause [e]dit [g]raph [d]etect [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
@@ -1602,6 +1795,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     network.send_rule_change(rule, rule_idx)
             elif key == ord("g"):
                 show_stats = not show_stats
+            elif key == ord("d"):
+                detect_enabled = not detect_enabled
             elif key == ord("L"):
                 # Load and run a script
                 scripts = list_scripts()
@@ -1740,6 +1935,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     generation = 0
             elif key == ord("g"):
                 show_stats = not show_stats
+            elif key == ord("d"):
+                detect_enabled = not detect_enabled
             elif key == ord("L"):
                 # Load and run a script (normal mode)
                 paused = True
