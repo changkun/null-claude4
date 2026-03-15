@@ -1,6 +1,6 @@
 # Cellular Automaton — Terminal Simulator
 
-A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, and supports arbitrary rules via B/S notation.
+A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, the **Ising Model** statistical mechanics spin simulation, and supports arbitrary rules via B/S notation.
 
 ## Usage
 
@@ -39,6 +39,8 @@ python3 life.py --rule dla                               # DLA fractal growth (s
 python3 life.py --rule dla --dla-preset lightning         # bolt-like downward paths
 python3 life.py --rule forestfire                          # Forest Fire (classic parameters)
 python3 life.py --rule forestfire --forestfire-preset tinderbox # constant firestorms
+python3 life.py --rule ising                                 # Ising Model (critical temperature)
+python3 life.py --rule ising --ising-preset cold              # large ordered domains
 python3 life.py --script probabilistic_life        # run a user script on startup
 python3 life.py --script ~/my_script.py            # run a script from a file path
 python3 life.py --discover                         # evolve interesting rulesets via GA
@@ -56,7 +58,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--speed`   | 0.1       | Delay between generations (seconds)  |
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
 | `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
-| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, `sandpile`, `dla`, `forestfire`, or B/S notation (e.g. `B36/S23`) |
+| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, `sandpile`, `dla`, `forestfire`, `ising`, or B/S notation (e.g. `B36/S23`) |
 | `--gs-preset` | `mitosis` | Gray-Scott parameter preset (`mitosis`, `coral`, `solitons`, `maze`, `spots`, `worms`, `waves`, `bubbles`) |
 | `--lenia-preset` | `orbium` | Lenia species preset (`orbium`, `geminium`, `scutium`, `hydrogeminium`, `wanderer`, `smooth_life`) |
 | `--eca-rule` | 30        | Wolfram rule number (0–255) for Elementary CA mode |
@@ -67,6 +69,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--sandpile-preset` | `single-source` | Abelian Sandpile preset (`single-source`, `random-rain`, `identity`, `max-stable`) |
 | `--dla-preset` | `snowflake` | DLA fractal preset (`snowflake`, `electrode`, `coral`, `lightning`) |
 | `--forestfire-preset` | `classic` | Forest Fire preset (`classic`, `tinderbox`, `old-growth`, `drought`, `rainforest`) |
+| `--ising-preset` | `critical` | Ising Model preset (`critical`, `cold`, `hot`, `quench`, `ordered`) |
 | `--script`  | —         | Run a Python script on startup (path or name from `~/.life-scripts/`) |
 | `--discover` | off      | Launch genetic algorithm rule discovery mode |
 | `--ga-generations` | 50 | Number of GA generations in discovery mode |
@@ -95,7 +98,8 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `B`       | Toggle Braille high-density rendering |
 | `T`       | Cycle topology (Torus → Klein Bottle → Möbius Strip → Bounded) |
 | `H`       | Toggle HashLife hyperspeed mode   |
-| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode; cycle Physarum presets in Physarum mode; cycle Sandpile presets in Sandpile mode; cycle DLA presets in DLA mode; cycle Forest Fire presets in Forest Fire mode |
+| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode; cycle Physarum presets in Physarum mode; cycle Sandpile presets in Sandpile mode; cycle DLA presets in DLA mode; cycle Forest Fire presets in Forest Fire mode; cycle Ising presets in Ising mode |
+| `t` / `y` | Decrease / increase temperature in Ising Model mode |
 | `W`       | Enter a specific Wolfram rule number (0–255) in Elementary CA mode |
 | `G`       | Export history as animated GIF    |
 | `L`       | Load and run a script             |
@@ -658,6 +662,60 @@ Cells are colored by **aggregation order** (when they joined the structure):
 - **HashLife** — incompatible (grid-free simulation). Switching to DLA mode auto-deactivates HashLife.
 - **Randomize** (`r`) — re-initializes DLA with the current preset.
 - **Status bar** — shows the current preset name.
+
+## Ising Model — Statistical Mechanics Spin Simulation
+
+The 2D Ising model simulates a lattice of magnetic spins (+1 or −1) evolving under the Metropolis algorithm. Each spin interacts with its four nearest neighbors on a toroidal grid: aligned neighbors lower the energy, misaligned neighbors raise it. At each step, every spin is considered for flipping — if flipping reduces energy it always flips; otherwise it flips with probability exp(−ΔE/T), where T is the temperature. This produces three distinct regimes:
+
+- **Low temperature** — large ordered ferromagnetic domains (most spins align)
+- **Critical temperature** (T ≈ 2.269) — fractal-like domain boundaries with power-law correlations, the hallmark of a second-order phase transition
+- **High temperature** — disordered paramagnetic noise (random-looking spins)
+
+The user can adjust temperature in real-time to watch phase transitions unfold.
+
+### Starting Ising Model
+
+```bash
+python3 life.py --rule ising                        # critical temperature (T ≈ 2.269)
+python3 life.py --rule ising --ising-preset cold     # low T, ordered domains
+python3 life.py --rule ising --ising-preset hot      # high T, paramagnetic noise
+python3 life.py --rule ising --ising-preset quench   # random start, quench to T=1.5
+python3 life.py --rule ising --ising-preset ordered  # all +1 spins, heat to critical
+```
+
+### Presets
+
+| Preset     | Temperature | Initial State | Description |
+|------------|-------------|---------------|-------------|
+| `critical` | 2.269       | Random        | Near the critical point — fractal domain boundaries |
+| `cold`     | 1.0         | Random        | Large ordered domains form quickly |
+| `hot`      | 5.0         | Random        | Disordered paramagnetic noise |
+| `quench`   | 1.5         | Random        | Watch domains coarsen from hot start |
+| `ordered`  | 2.269       | All +1        | Heat aligned spins to see order break down |
+
+### Controls (Ising mode)
+
+| Key | Action |
+|-----|--------|
+| `t` | Cool down (decrease T by 0.1, min 0.1) |
+| `y` | Heat up (increase T by 0.1, max 10.0) |
+| `<` / `>` | Cycle through Ising presets |
+| `r` | Re-initialize the spin lattice |
+
+### Rendering
+
+- **Spin +1** — rendered as red full blocks
+- **Spin −1** — rendered as blue full blocks
+
+### Implementation
+
+Uses a **checkerboard decomposition** with NumPy (when available) for vectorized Metropolis sweeps, or falls back to pure-Python single-spin-flip updates with an exponential cache for the two possible positive ΔE values (4J and 8J).
+
+### Interactions
+
+- **HashLife** — incompatible. Switching to Ising mode auto-deactivates HashLife.
+- **Randomize** (`r`) — re-initializes the spin lattice with the current preset.
+- **Status bar** — shows current temperature and control hints.
 
 ## Population Statistics Dashboard
 

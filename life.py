@@ -47,6 +47,7 @@ RULES = {
     "sandpile": {"b": set(), "s": set(), "name": "Sandpile (single-source)", "sandpile": True},
     "dla": {"b": set(), "s": set(), "name": "DLA (snowflake)", "dla": True},
     "forestfire": {"b": set(), "s": set(), "name": "Forest Fire (classic)", "forestfire": True},
+    "ising": {"b": set(), "s": set(), "name": "Ising Model (critical)", "ising": True},
 }
 
 RULE_NAMES = list(RULES.keys())
@@ -172,6 +173,11 @@ def _is_dla(rule):
 def _is_forestfire(rule):
     """Check if the current rule is the Forest Fire cellular automaton."""
     return rule.get("forestfire", False)
+
+
+def _is_ising(rule):
+    """Check if the current rule is the Ising Model spin simulation."""
+    return rule.get("ising", False)
 
 
 # --- Wa-Tor Predator-Prey Ecosystem ---
@@ -2079,6 +2085,197 @@ def _ff_color(val):
     return 21          # burning hot — red (pair 21)
 
 
+# --- Ising Model: Statistical Mechanics Spin Simulation ---
+# The 2D Ising model on a square lattice.  Each cell holds a spin (+1 or −1).
+# At each step a spin is considered for flipping via the Metropolis algorithm:
+#   ΔE = 2 * s_i * Σ(neighbors)  (energy change if spin i flips)
+#   If ΔE ≤ 0, flip always; else flip with probability exp(−ΔE / T).
+# At low T: ordered ferromagnetic domains.  At T ≈ 2.269 (critical): fractal
+# domain boundaries with power-law correlations.  At high T: paramagnetic noise.
+# The user can raise/lower T in real-time with 't'/'y' keys.
+
+ISING_PRESETS = {
+    "critical": {
+        "name": "Critical",
+        "description": "Near the critical temperature Tc ≈ 2.269 — fractal domain boundaries",
+        "temperature": 2.269,
+        "initial": "random",
+    },
+    "cold": {
+        "name": "Cold",
+        "description": "Low temperature — large ordered domains form quickly",
+        "temperature": 1.0,
+        "initial": "random",
+    },
+    "hot": {
+        "name": "Hot",
+        "description": "High temperature — disordered paramagnetic noise",
+        "temperature": 5.0,
+        "initial": "random",
+    },
+    "quench": {
+        "name": "Quench",
+        "description": "Start hot random, quench to low T — watch domains coarsen",
+        "temperature": 1.5,
+        "initial": "random",
+    },
+    "ordered": {
+        "name": "Ordered",
+        "description": "Start fully aligned (+1), heat to see order break down",
+        "temperature": 2.269,
+        "initial": "up",
+    },
+}
+ISING_PRESET_NAMES = list(ISING_PRESETS.keys())
+
+_ising_grid = None
+_ising_rows, _ising_cols = 0, 0
+_ising_preset_idx = 0
+_ising_temperature = 2.269
+_ISING_J = 1.0  # coupling constant
+
+
+def _ising_init(rows, cols, preset_name=None):
+    """Initialize the Ising model spin lattice."""
+    global _ising_grid, _ising_rows, _ising_cols, _ising_temperature
+    import random as _rng
+    _ising_rows, _ising_cols = rows, cols
+    if preset_name is None:
+        preset_name = ISING_PRESET_NAMES[_ising_preset_idx]
+    preset = ISING_PRESETS[preset_name]
+    _ising_temperature = preset["temperature"]
+    init_type = preset.get("initial", "random")
+
+    if _HAS_NUMPY:
+        if init_type == "up":
+            _ising_grid = np.ones((rows, cols), dtype=np.int8)
+        elif init_type == "down":
+            _ising_grid = -np.ones((rows, cols), dtype=np.int8)
+        else:
+            _ising_grid = np.where(
+                np.random.random((rows, cols)) < 0.5,
+                np.int8(1), np.int8(-1)
+            )
+    else:
+        _ising_grid = []
+        for r in range(rows):
+            row = []
+            for c in range(cols):
+                if init_type == "up":
+                    row.append(1)
+                elif init_type == "down":
+                    row.append(-1)
+                else:
+                    row.append(1 if _rng.random() < 0.5 else -1)
+            _ising_grid.append(row)
+
+
+def _ising_step():
+    """Advance the Ising model by one sweep (N spin-flip attempts via Metropolis)."""
+    global _ising_grid
+    import random as _rng
+    rows, cols = _ising_rows, _ising_cols
+    if rows < 1 or cols < 1:
+        return
+    T = _ising_temperature
+    N = rows * cols
+
+    if _HAS_NUMPY:
+        _ising_step_numpy(T, N)
+    else:
+        _ising_step_python(T, N)
+
+
+def _ising_step_numpy(T, N):
+    """Vectorized Ising sweep using checkerboard decomposition."""
+    global _ising_grid
+    rows, cols = _ising_rows, _ising_cols
+    g = _ising_grid
+
+    # Compute neighbor sum for all cells at once
+    neighbors = (
+        np.roll(g, 1, axis=0) + np.roll(g, -1, axis=0) +
+        np.roll(g, 1, axis=1) + np.roll(g, -1, axis=1)
+    )
+
+    # Checkerboard update (two half-sweeps to avoid update conflicts)
+    for parity in (0, 1):
+        mask = np.zeros((rows, cols), dtype=bool)
+        mask[parity::2, ::2] = True
+        mask[1 - parity::2, 1::2] = True
+
+        dE = 2.0 * _ISING_J * g * neighbors
+        if T > 0.001:
+            prob = np.exp(-dE / T)
+            flip = (dE <= 0) | (np.random.random((rows, cols)) < prob)
+        else:
+            flip = dE <= 0
+
+        flip = flip & mask
+        g[flip] = -g[flip]
+
+        # Recompute neighbors after first half
+        if parity == 0:
+            neighbors = (
+                np.roll(g, 1, axis=0) + np.roll(g, -1, axis=0) +
+                np.roll(g, 1, axis=1) + np.roll(g, -1, axis=1)
+            )
+
+    _ising_grid = g
+
+
+def _ising_step_python(T, N):
+    """Pure-Python Metropolis single-spin-flip sweep."""
+    import random as _rng
+    rows, cols = _ising_rows, _ising_cols
+    g = _ising_grid
+    exp_cache = {}
+    if T > 0.001:
+        for dE in (4, 8):  # only possible positive ΔE values for J=1
+            exp_cache[dE] = math.exp(-dE / T)
+
+    for _ in range(N):
+        r = _rng.randint(0, rows - 1)
+        c = _rng.randint(0, cols - 1)
+        s = g[r][c]
+        # Sum of 4 neighbors (toroidal boundary)
+        nb = (g[(r - 1) % rows][c] + g[(r + 1) % rows][c] +
+              g[r][(c - 1) % cols] + g[r][(c + 1) % cols])
+        dE = 2 * _ISING_J * s * nb
+        if dE <= 0:
+            g[r][c] = -s
+        elif T > 0.001:
+            dE_int = int(dE)
+            if dE_int in exp_cache:
+                p = exp_cache[dE_int]
+            else:
+                p = math.exp(-dE / T)
+                exp_cache[dE_int] = p
+            if _rng.random() < p:
+                g[r][c] = -s
+
+
+def _ising_to_grid(rows, cols):
+    """Convert Ising spin lattice to display grid (0-100 scale)."""
+    grid = [[0] * cols for _ in range(rows)]
+    for r in range(min(rows, _ising_rows)):
+        for c in range(min(cols, _ising_cols)):
+            if _HAS_NUMPY:
+                s = int(_ising_grid[r, c])
+            else:
+                s = _ising_grid[r][c]
+            # +1 spin → 80 (warm color), −1 spin → 20 (cool color)
+            grid[r][c] = 80 if s == 1 else 20
+    return grid
+
+
+def _ising_color(val):
+    """Map Ising grid value to a curses color pair."""
+    if val >= 50:
+        return 21   # spin +1 → red (pair 21)
+    return 6        # spin −1 → blue (pair 6)
+
+
 # --- Lenia: Continuous Smooth-Kernel Cellular Automata ---
 # Generalizes Conway's Life into continuous space and time using smooth
 # ring-shaped kernels and a Gaussian growth function.
@@ -3177,6 +3374,10 @@ def place_pattern(grid, name, row_off=None, col_off=None):
 def step(grid, rule=None):
     if rule is None:
         rule = RULES["life"]
+    if _is_ising(rule):
+        rows, cols = len(grid), len(grid[0])
+        _ising_step()
+        return _ising_to_grid(rows, cols)
     if _is_forestfire(rule):
         rows, cols = len(grid), len(grid[0])
         _ff_step()
@@ -4345,6 +4546,7 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
     tm = _is_turmite(rule)
     ph = _is_physarum(rule)
     ff = _is_forestfire(rule)
+    ig = _is_ising(rule)
 
     # Initialize grid
     grid = make_grid(rows, cols)
@@ -5198,6 +5400,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         sandpile = _is_sandpile(rule)
         dla = _is_dla(rule)
         forestfire = _is_forestfire(rule)
+        ising = _is_ising(rule)
 
         # Track population
         pop = _count_population(grid)
@@ -5300,6 +5503,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif forestfire:
                         attr = curses.color_pair(_ff_color(age))
                         cell_str = "\u2588\u2588" if age else "  "
+                    elif ising:
+                        attr = curses.color_pair(_ising_color(age))
+                        cell_str = "\u2588\u2588"
                     elif dla:
                         attr = curses.color_pair(_dla_color(age))
                         cell_str = "\u2588\u2588" if age else "  "
@@ -5401,7 +5607,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
             else:
                 wator_str = ""
             ff_str = f" | p={_ff_p_grow:.4f} f={_ff_f_lightning:.5f} [<>]preset" if forestfire else ""
-            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{topo_str}{hashlife_str}{gs_str}{eca_str}{turmite_str}{wator_str}{ff_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [T]opo [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
+            ising_str = f" | T={_ising_temperature:.3f} [t]cool [y]heat [<>]preset" if ising else ""
+            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{topo_str}{hashlife_str}{gs_str}{eca_str}{turmite_str}{wator_str}{ff_str}{ising_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [T]opo [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
@@ -5789,6 +5996,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_phys = physarum
                 was_sp = sandpile
                 was_ff = forestfire
+                was_ising = ising
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -5805,10 +6013,11 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_phys = _is_physarum(rule)
                 new_sp = _is_sandpile(rule)
                 new_ff = _is_forestfire(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff:
+                new_ising = _is_ising(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff or new_ising:
                     hashlife_active = False
                 # Mode transition: clear grid and re-initialize
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff or was_ising != new_ising:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -5842,6 +6051,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_ff:
                         _ff_init(rows, cols)
                         grid = _ff_to_grid(rows, cols)
+                    elif new_ising:
+                        _ising_init(rows, cols)
+                        grid = _ising_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -5942,6 +6154,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 elif physarum:
                     _phys_init(rows, cols)
                     grid = _phys_to_grid(rows, cols)
+                elif ising:
+                    _ising_init(rows, cols)
+                    grid = _ising_to_grid(rows, cols)
                 else:
                     import random
                     for r2 in range(rows):
@@ -6018,6 +6233,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_ff:
                         _ff_init(rows, cols)
                         grid = _ff_to_grid(rows, cols)
+                    elif new_ising:
+                        _ising_init(rows, cols)
+                        grid = _ising_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -6365,6 +6583,36 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 rule["name"] = f"Forest Fire ({FORESTFIRE_PRESETS[preset_name]['name']})"
                 _ff_init(rows, cols, preset_name)
                 grid = _ff_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord("t") and ising:
+                # Cool down (decrease temperature)
+                _ising_temperature = max(0.1, _ising_temperature - 0.1)
+            elif key == ord("y") and ising:
+                # Heat up (increase temperature)
+                _ising_temperature = min(10.0, _ising_temperature + 0.1)
+            elif key == ord("<") and ising:
+                # Previous Ising preset
+                _ising_preset_idx = (_ising_preset_idx - 1) % len(ISING_PRESET_NAMES)
+                preset_name = ISING_PRESET_NAMES[_ising_preset_idx]
+                rule["name"] = f"Ising Model ({ISING_PRESETS[preset_name]['name']})"
+                _ising_init(rows, cols, preset_name)
+                grid = _ising_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord(">") and ising:
+                # Next Ising preset
+                _ising_preset_idx = (_ising_preset_idx + 1) % len(ISING_PRESET_NAMES)
+                preset_name = ISING_PRESET_NAMES[_ising_preset_idx]
+                rule["name"] = f"Ising Model ({ISING_PRESETS[preset_name]['name']})"
+                _ising_init(rows, cols, preset_name)
+                grid = _ising_to_grid(rows, cols)
                 generation = 0
                 history = [copy.deepcopy(grid)]
                 hist_idx = 0
@@ -7242,6 +7490,13 @@ def main():
              "Options: " + ", ".join(FORESTFIRE_PRESETS.keys()),
     )
     parser.add_argument(
+        "--ising-preset",
+        choices=list(ISING_PRESETS.keys()),
+        default="critical",
+        help="Ising Model preset when --rule ising (default: critical). "
+             "Options: " + ", ".join(ISING_PRESETS.keys()),
+    )
+    parser.add_argument(
         "--discover",
         action="store_true",
         default=False,
@@ -7496,6 +7751,15 @@ def main():
             rule["name"] = f"Forest Fire ({preset['name']})"
         _ff_init(args.rows, args.cols, ff_preset_name)
         grid = _ff_to_grid(args.rows, args.cols)
+    elif args.rule.lower() == "ising":
+        # Ising Model spin simulation
+        ising_preset_name = args.ising_preset
+        if ising_preset_name in ISING_PRESETS:
+            _ising_preset_idx = ISING_PRESET_NAMES.index(ising_preset_name)
+            preset = ISING_PRESETS[ising_preset_name]
+            rule["name"] = f"Ising Model ({preset['name']})"
+        _ising_init(args.rows, args.cols, ising_preset_name)
+        grid = _ising_to_grid(args.rows, args.cols)
     elif args.rule.lower() == "sandpile":
         # Abelian Sandpile self-organized criticality
         sp_preset_name = args.sandpile_preset
