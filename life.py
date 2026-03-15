@@ -42,6 +42,7 @@ RULES = {
     "lenia":      {"b": set(), "s": set(), "name": "Lenia (Orbium)", "lenia": True},
     "turmite":    {"b": set(), "s": set(), "name": "Langton's Ant", "turmite": True},
     "wator":      {"b": set(), "s": set(), "name": "Wa-Tor (Classic)", "wator": True},
+    "fallingsand": {"b": set(), "s": set(), "name": "Falling Sand", "fallingsand": True},
 }
 
 RULE_NAMES = list(RULES.keys())
@@ -142,6 +143,11 @@ def _is_turmite(rule):
 def _is_wator(rule):
     """Check if the current rule is the Wa-Tor predator-prey simulation."""
     return rule.get("wator", False)
+
+
+def _is_fallingsand(rule):
+    """Check if the current rule is the Falling Sand particle simulation."""
+    return rule.get("fallingsand", False)
 
 
 # --- Wa-Tor Predator-Prey Ecosystem ---
@@ -383,6 +389,431 @@ def _wator_population(grid):
             elif cell >= 50:
                 sharks += 1
     return fish, sharks
+
+
+# --- Falling Sand Particle Simulation ---
+# Gravity-driven particle physics sandbox.  Each cell holds a material type
+# (sand, water, fire, plant, stone, smoke, oil) that obeys simple movement
+# rules: sand falls and piles, water flows, fire rises and burns, smoke
+# drifts upward and fades, plants grow near water and burn near fire.
+
+# Particle type constants
+_FS_EMPTY = 0
+_FS_SAND = 1
+_FS_WATER = 2
+_FS_STONE = 3
+_FS_FIRE = 4
+_FS_SMOKE = 5
+_FS_PLANT = 6
+_FS_OIL = 7
+
+FALLINGSAND_PRESETS = {
+    "hourglass":  {"layout": "hourglass",
+                   "name": "Hourglass"},
+    "rain":       {"layout": "rain",
+                   "name": "Rainstorm"},
+    "volcano":    {"layout": "volcano",
+                   "name": "Volcano"},
+    "garden":     {"layout": "garden",
+                   "name": "Garden"},
+    "sandbox":    {"layout": "sandbox",
+                   "name": "Sandbox"},
+    "cascade":    {"layout": "cascade",
+                   "name": "Cascade"},
+}
+FALLINGSAND_PRESET_NAMES = list(FALLINGSAND_PRESETS.keys())
+
+# Module-level state
+_fs_grid = None          # 2D array of particle types
+_fs_lifetime = None      # 2D array: ticks since particle placed (for fire/smoke decay)
+_fs_preset_idx = 0
+_fs_rows = 0
+_fs_cols = 0
+
+
+def _fs_init(rows, cols, preset_name=None):
+    """Initialize the falling sand simulation grid."""
+    import random as _rnd
+    global _fs_grid, _fs_lifetime, _fs_rows, _fs_cols, _fs_preset_idx
+
+    if preset_name is None:
+        preset_name = FALLINGSAND_PRESET_NAMES[_fs_preset_idx]
+    preset = FALLINGSAND_PRESETS[preset_name]
+    _fs_rows = rows
+    _fs_cols = cols
+
+    _fs_grid = [[_FS_EMPTY] * cols for _ in range(rows)]
+    _fs_lifetime = [[0] * cols for _ in range(rows)]
+
+    layout = preset["layout"]
+
+    if layout == "hourglass":
+        # Stone walls forming an hourglass, sand in top half
+        mid_c = cols // 2
+        mid_r = rows // 2
+        # Build walls
+        for r in range(rows):
+            _fs_grid[r][0] = _FS_STONE
+            _fs_grid[r][cols - 1] = _FS_STONE
+        for c in range(cols):
+            _fs_grid[0][c] = _FS_STONE
+            _fs_grid[rows - 1][c] = _FS_STONE
+        # Hourglass neck walls
+        neck_width = max(2, cols // 20)
+        for c in range(cols):
+            dist = abs(c - mid_c)
+            if dist > neck_width:
+                _fs_grid[mid_r][c] = _FS_STONE
+                if mid_r - 1 >= 0:
+                    _fs_grid[mid_r - 1][c] = _FS_STONE
+        # Fill top half with sand
+        for r in range(2, mid_r - 1):
+            for c in range(2, cols - 2):
+                _fs_grid[r][c] = _FS_SAND
+
+    elif layout == "rain":
+        # Stone floor, water spawns from top (handled in step)
+        for c in range(cols):
+            _fs_grid[rows - 1][c] = _FS_STONE
+            _fs_grid[rows - 2][c] = _FS_STONE
+        # A few stone platforms
+        for c in range(cols // 4, cols // 4 + cols // 3):
+            if c < cols:
+                _fs_grid[rows // 2][c] = _FS_STONE
+        for c in range(cols // 2, cols // 2 + cols // 4):
+            if c < cols:
+                _fs_grid[rows // 3][c] = _FS_STONE
+
+    elif layout == "volcano":
+        # Stone mountain with fire at the top
+        mid_c = cols // 2
+        base_r = rows - 1
+        # Build mountain
+        for c in range(cols):
+            _fs_grid[base_r][c] = _FS_STONE
+        mountain_h = rows // 3
+        for layer in range(mountain_h):
+            r = base_r - layer
+            half_w = (mountain_h - layer) * cols // (2 * mountain_h)
+            for c in range(mid_c - half_w, mid_c + half_w + 1):
+                if 0 <= c < cols and 0 <= r < rows:
+                    _fs_grid[r][c] = _FS_STONE
+        # Fire at crater
+        crater_r = base_r - mountain_h
+        for dc in range(-2, 3):
+            c = mid_c + dc
+            if 0 <= c < cols and 0 <= crater_r < rows:
+                _fs_grid[crater_r][c] = _FS_FIRE
+                _fs_lifetime[crater_r][c] = 1
+        # Oil pools at base
+        for c in range(3, cols // 4):
+            _fs_grid[base_r - 1][c] = _FS_OIL
+
+    elif layout == "garden":
+        # Floor with plants and a water source
+        for c in range(cols):
+            _fs_grid[rows - 1][c] = _FS_STONE
+        # Plant row
+        for c in range(2, cols - 2, 3):
+            _fs_grid[rows - 2][c] = _FS_PLANT
+        # Water pools
+        for c in range(cols // 3, cols // 3 + 5):
+            if c < cols:
+                _fs_grid[rows - 2][c] = _FS_WATER
+
+    elif layout == "sandbox":
+        # Random scatter of materials
+        for c in range(cols):
+            _fs_grid[rows - 1][c] = _FS_STONE
+        for r in range(rows - 1):
+            for c in range(cols):
+                roll = _rnd.random()
+                if roll < 0.08:
+                    _fs_grid[r][c] = _FS_SAND
+                elif roll < 0.12:
+                    _fs_grid[r][c] = _FS_WATER
+                elif roll < 0.14:
+                    _fs_grid[r][c] = _FS_STONE
+                elif roll < 0.155:
+                    _fs_grid[r][c] = _FS_PLANT
+                elif roll < 0.165:
+                    _fs_grid[r][c] = _FS_OIL
+
+    elif layout == "cascade":
+        # Layered shelves with different materials
+        for c in range(cols):
+            _fs_grid[rows - 1][c] = _FS_STONE
+        shelf_gap = max(4, rows // 5)
+        materials = [_FS_SAND, _FS_WATER, _FS_OIL, _FS_SAND]
+        for i, mat in enumerate(materials):
+            shelf_r = shelf_gap * (i + 1)
+            if shelf_r >= rows - 1:
+                break
+            # Shelf with gap
+            gap_start = cols // 3 + i * (cols // 8)
+            gap_end = gap_start + max(3, cols // 10)
+            for c in range(cols):
+                if shelf_r < rows and (c < gap_start or c > gap_end):
+                    _fs_grid[shelf_r][c] = _FS_STONE
+            # Material on top of shelf
+            for c in range(1, cols - 1):
+                if shelf_r - 1 >= 0 and _fs_grid[shelf_r][c] == _FS_STONE:
+                    _fs_grid[shelf_r - 1][c] = mat
+
+
+def _fs_step():
+    """Advance the falling sand simulation by one tick."""
+    import random as _rnd
+    global _fs_grid, _fs_lifetime
+
+    rows, cols = _fs_rows, _fs_cols
+    grid = _fs_grid
+    life = _fs_lifetime
+
+    # Process bottom-to-top so falling particles move correctly
+    for r in range(rows - 2, -1, -1):
+        # Alternate left-to-right and right-to-left each row for fairness
+        if r % 2 == 0:
+            col_range = range(cols)
+        else:
+            col_range = range(cols - 1, -1, -1)
+        for c in col_range:
+            p = grid[r][c]
+            if p == _FS_EMPTY or p == _FS_STONE:
+                continue
+
+            if p == _FS_SAND:
+                # Sand: fall down, then diag-left/right
+                if r + 1 < rows and grid[r + 1][c] == _FS_EMPTY:
+                    grid[r + 1][c] = _FS_SAND
+                    grid[r][c] = _FS_EMPTY
+                elif r + 1 < rows and grid[r + 1][c] == _FS_WATER:
+                    # Sand sinks through water
+                    grid[r + 1][c] = _FS_SAND
+                    grid[r][c] = _FS_WATER
+                elif r + 1 < rows and grid[r + 1][c] == _FS_OIL:
+                    grid[r + 1][c] = _FS_SAND
+                    grid[r][c] = _FS_OIL
+                else:
+                    # Try diagonal
+                    dirs = [(-1, 1)] if _rnd.random() < 0.5 else [(1, -1)]
+                    dirs = [(-1, 1), (1, -1)] if _rnd.random() < 0.5 else [(1, -1), (-1, 1)]
+                    # Actually: down-left / down-right
+                    dl = (r + 1, c - 1)
+                    dr = (r + 1, c + 1)
+                    opts = []
+                    if dl[1] >= 0 and dl[0] < rows and grid[dl[0]][dl[1]] in (_FS_EMPTY, _FS_WATER, _FS_OIL):
+                        opts.append(dl)
+                    if dr[1] < cols and dr[0] < rows and grid[dr[0]][dr[1]] in (_FS_EMPTY, _FS_WATER, _FS_OIL):
+                        opts.append(dr)
+                    if opts:
+                        nr, nc = _rnd.choice(opts)
+                        displaced = grid[nr][nc]
+                        grid[nr][nc] = _FS_SAND
+                        grid[r][c] = displaced
+
+            elif p == _FS_WATER:
+                # Water: fall, then flow sideways
+                if r + 1 < rows and grid[r + 1][c] == _FS_EMPTY:
+                    grid[r + 1][c] = _FS_WATER
+                    grid[r][c] = _FS_EMPTY
+                elif r + 1 < rows and grid[r + 1][c] == _FS_OIL:
+                    # Water sinks below oil
+                    grid[r + 1][c] = _FS_WATER
+                    grid[r][c] = _FS_OIL
+                else:
+                    # Try down-diagonal
+                    dl = (r + 1, c - 1)
+                    dr = (r + 1, c + 1)
+                    opts = []
+                    if dl[1] >= 0 and dl[0] < rows and grid[dl[0]][dl[1]] == _FS_EMPTY:
+                        opts.append(dl)
+                    if dr[1] < cols and dr[0] < rows and grid[dr[0]][dr[1]] == _FS_EMPTY:
+                        opts.append(dr)
+                    if opts:
+                        nr, nc = _rnd.choice(opts)
+                        grid[nr][nc] = _FS_WATER
+                        grid[r][c] = _FS_EMPTY
+                    else:
+                        # Flow sideways
+                        sides = []
+                        if c - 1 >= 0 and grid[r][c - 1] == _FS_EMPTY:
+                            sides.append((r, c - 1))
+                        if c + 1 < cols and grid[r][c + 1] == _FS_EMPTY:
+                            sides.append((r, c + 1))
+                        if sides:
+                            nr, nc = _rnd.choice(sides)
+                            grid[nr][nc] = _FS_WATER
+                            grid[r][c] = _FS_EMPTY
+
+            elif p == _FS_OIL:
+                # Oil: like water but lighter (floats on water)
+                if r + 1 < rows and grid[r + 1][c] == _FS_EMPTY:
+                    grid[r + 1][c] = _FS_OIL
+                    grid[r][c] = _FS_EMPTY
+                else:
+                    dl = (r + 1, c - 1)
+                    dr = (r + 1, c + 1)
+                    opts = []
+                    if dl[1] >= 0 and dl[0] < rows and grid[dl[0]][dl[1]] == _FS_EMPTY:
+                        opts.append(dl)
+                    if dr[1] < cols and dr[0] < rows and grid[dr[0]][dr[1]] == _FS_EMPTY:
+                        opts.append(dr)
+                    if opts:
+                        nr, nc = _rnd.choice(opts)
+                        grid[nr][nc] = _FS_OIL
+                        grid[r][c] = _FS_EMPTY
+                    else:
+                        sides = []
+                        if c - 1 >= 0 and grid[r][c - 1] == _FS_EMPTY:
+                            sides.append((r, c - 1))
+                        if c + 1 < cols and grid[r][c + 1] == _FS_EMPTY:
+                            sides.append((r, c + 1))
+                        if sides:
+                            nr, nc = _rnd.choice(sides)
+                            grid[nr][nc] = _FS_OIL
+                            grid[r][c] = _FS_EMPTY
+
+            elif p == _FS_FIRE:
+                life[r][c] += 1
+                # Fire burns out after a while
+                if life[r][c] > 15 + _rnd.randint(0, 10):
+                    grid[r][c] = _FS_SMOKE
+                    life[r][c] = 0
+                    continue
+                # Spread fire to adjacent flammable materials
+                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)):
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < rows and 0 <= nc < cols:
+                        neighbor = grid[nr][nc]
+                        if neighbor == _FS_PLANT and _rnd.random() < 0.15:
+                            grid[nr][nc] = _FS_FIRE
+                            life[nr][nc] = 0
+                        elif neighbor == _FS_OIL and _rnd.random() < 0.30:
+                            grid[nr][nc] = _FS_FIRE
+                            life[nr][nc] = 0
+                # Fire rises
+                if r - 1 >= 0 and grid[r - 1][c] == _FS_EMPTY and _rnd.random() < 0.3:
+                    grid[r - 1][c] = _FS_FIRE
+                    life[r - 1][c] = 0
+                    grid[r][c] = _FS_SMOKE
+                    life[r][c] = 0
+
+            elif p == _FS_SMOKE:
+                life[r][c] += 1
+                # Smoke dissipates
+                if life[r][c] > 8 + _rnd.randint(0, 6):
+                    grid[r][c] = _FS_EMPTY
+                    life[r][c] = 0
+                    continue
+                # Smoke rises
+                if r - 1 >= 0 and grid[r - 1][c] == _FS_EMPTY:
+                    grid[r - 1][c] = _FS_SMOKE
+                    life[r - 1][c] = life[r][c]
+                    grid[r][c] = _FS_EMPTY
+                    life[r][c] = 0
+                elif r - 1 >= 0:
+                    # Drift sideways
+                    sides = []
+                    if c - 1 >= 0 and grid[r - 1][c - 1] == _FS_EMPTY:
+                        sides.append((r - 1, c - 1))
+                    if c + 1 < cols and grid[r - 1][c + 1] == _FS_EMPTY:
+                        sides.append((r - 1, c + 1))
+                    if sides:
+                        nr, nc = _rnd.choice(sides)
+                        grid[nr][nc] = _FS_SMOKE
+                        life[nr][nc] = life[r][c]
+                        grid[r][c] = _FS_EMPTY
+                        life[r][c] = 0
+
+            elif p == _FS_PLANT:
+                # Plants grow near water
+                has_water = False
+                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < rows and 0 <= nc < cols and grid[nr][nc] == _FS_WATER:
+                        has_water = True
+                        break
+                if has_water and _rnd.random() < 0.03:
+                    # Grow into an adjacent empty cell
+                    grow_opts = []
+                    for dr, dc in ((-1, 0), (0, -1), (0, 1)):
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < rows and 0 <= nc < cols and grid[nr][nc] == _FS_EMPTY:
+                            grow_opts.append((nr, nc))
+                    if grow_opts:
+                        nr, nc = _rnd.choice(grow_opts)
+                        grid[nr][nc] = _FS_PLANT
+
+    # Rain preset: spawn water drops at top
+    preset_name = FALLINGSAND_PRESET_NAMES[_fs_preset_idx]
+    if preset_name == "rain":
+        for _ in range(max(1, cols // 15)):
+            c = _rnd.randint(0, cols - 1)
+            if grid[0][c] == _FS_EMPTY:
+                grid[0][c] = _FS_WATER
+    # Volcano preset: replenish fire at crater
+    elif preset_name == "volcano":
+        mid_c = cols // 2
+        base_r = rows - 1
+        mountain_h = rows // 3
+        crater_r = base_r - mountain_h
+        if 0 <= crater_r < rows:
+            for dc in range(-1, 2):
+                cc = mid_c + dc
+                if 0 <= cc < cols and grid[crater_r][cc] == _FS_EMPTY:
+                    if _rnd.random() < 0.4:
+                        grid[crater_r][cc] = _FS_FIRE
+                        life[crater_r][cc] = 0
+
+
+def _fs_to_grid(rows, cols):
+    """Convert falling sand state to display grid.
+
+    Encoding: 0=empty, 1-14=sand, 15-28=water, 29-42=stone,
+              43-56=fire, 57-70=smoke, 71-84=plant, 85-98=oil.
+    """
+    grid = [[0] * cols for _ in range(rows)]
+    for r in range(min(rows, _fs_rows)):
+        for c in range(min(cols, _fs_cols)):
+            p = _fs_grid[r][c]
+            if p == _FS_EMPTY:
+                continue
+            elif p == _FS_SAND:
+                grid[r][c] = 1 + min(_fs_lifetime[r][c], 13)
+            elif p == _FS_WATER:
+                grid[r][c] = 15
+            elif p == _FS_STONE:
+                grid[r][c] = 29
+            elif p == _FS_FIRE:
+                grid[r][c] = 43 + min(_fs_lifetime[r][c], 13)
+            elif p == _FS_SMOKE:
+                grid[r][c] = 57 + min(_fs_lifetime[r][c], 13)
+            elif p == _FS_PLANT:
+                grid[r][c] = 71
+            elif p == _FS_OIL:
+                grid[r][c] = 85
+    return grid
+
+
+def _fs_color(val):
+    """Return curses color pair for a falling sand cell value."""
+    if val == 0:
+        return 1        # empty (default green, won't be shown)
+    elif val < 15:
+        return 15       # sand: yellow
+    elif val < 29:
+        return 19       # water: blue
+    elif val < 43:
+        return 2        # stone: white
+    elif val < 57:
+        return 21       # fire: red
+    elif val < 71:
+        return 7        # smoke: magenta
+    elif val < 85:
+        return 1        # plant: green
+    else:
+        return 5        # oil: cyan
 
 
 # --- Langton's Ant / Generalized Turmites ---
@@ -1893,6 +2324,10 @@ def place_pattern(grid, name, row_off=None, col_off=None):
 def step(grid, rule=None):
     if rule is None:
         rule = RULES["life"]
+    if _is_fallingsand(rule):
+        rows, cols = len(grid), len(grid[0])
+        _fs_step()
+        return _fs_to_grid(rows, cols)
     if _is_wator(rule):
         rows, cols = len(grid), len(grid[0])
         _wator_step()
@@ -2490,7 +2925,7 @@ def _render_braille_grid(grid, rows, cols, term_rows, term_cols):
     return lines
 
 
-def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=False, wator=False):
+def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=False, wator=False, fallingsand=False):
     """Pick the curses color pair for a Braille cell based on majority vote.
 
     Examines the 2×4 block of grid cells that map to terminal position (tr, tc)
@@ -2506,6 +2941,10 @@ def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=Fals
                 if gs:
                     cp = _grayscott_color(age)
                     counts[cp] = counts.get(cp, 0) + 1
+                elif fallingsand:
+                    if age:
+                        cp = _fs_color(age)
+                        counts[cp] = counts.get(cp, 0) + 1
                 elif wator:
                     if age:
                         cp = _wator_color(age)
@@ -3847,7 +4286,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
     sound = SoundEngine()
 
     # Topology mode
-    global _topology, _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx
+    global _topology, _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _fs_preset_idx
     topo_idx = 0  # index into TOPOLOGIES
     _topology = TOPOLOGIES[topo_idx]
 
@@ -3869,6 +4308,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         lenia = _is_lenia(rule)
         turmite = _is_turmite(rule)
         wator = _is_wator(rule)
+        fallingsand = _is_fallingsand(rule)
 
         # Track population
         pop = _count_population(grid)
@@ -3937,7 +4377,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     ch = braille_lines[tr][tc]
                     if ch == chr(_BRAILLE_BASE):
                         continue  # empty — skip for speed
-                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia, turmite=turmite, wator=wator)
+                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia, turmite=turmite, wator=wator, fallingsand=fallingsand)
                     try:
                         stdscr.addstr(tr, tc, ch, curses.color_pair(cp))
                     except curses.error:
@@ -3968,6 +4408,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                         attr = curses.color_pair(8)
                     elif detected_cells and (r, c) in detected_cells:
                         attr = curses.color_pair(12)
+                    elif fallingsand:
+                        attr = curses.color_pair(_fs_color(age))
+                        cell_str = "\u2588\u2588" if age else "  "
                     elif wator:
                         attr = curses.color_pair(_wator_color(age))
                         cell_str = "\u2588\u2588" if age else "  "
@@ -4443,6 +4886,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_lenia = lenia
                 was_turmite = turmite
                 was_wator = wator
+                was_fs = fallingsand
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -4455,10 +4899,11 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_lenia = _is_lenia(rule)
                 new_turmite = _is_turmite(rule)
                 new_wator = _is_wator(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator:
+                new_fs = _is_fallingsand(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs:
                     hashlife_active = False
                 # Mode transition: clear grid and re-initialize
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -4480,6 +4925,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_wator:
                         _wator_init(rows, cols)
                         grid = _wator_to_grid(rows, cols)
+                    elif new_fs:
+                        _fs_init(rows, cols)
+                        grid = _fs_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -4597,6 +5045,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_lenia = lenia
                 was_turmite = turmite
                 was_wator = wator
+                was_fs = fallingsand
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -4609,9 +5058,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_lenia = _is_lenia(rule)
                 new_turmite = _is_turmite(rule)
                 new_wator = _is_wator(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator:
+                new_fs = _is_fallingsand(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs:
                     hashlife_active = False
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -4633,6 +5083,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_wator:
                         _wator_init(rows, cols)
                         grid = _wator_to_grid(rows, cols)
+                    elif new_fs:
+                        _fs_init(rows, cols)
+                        grid = _fs_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -4884,6 +5337,30 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 rule["name"] = f"Wa-Tor ({WATOR_PRESETS[preset_name]['name']})"
                 _wator_init(rows, cols, preset_name)
                 grid = _wator_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord("<") and fallingsand:
+                # Previous Falling Sand preset
+                _fs_preset_idx = (_fs_preset_idx - 1) % len(FALLINGSAND_PRESET_NAMES)
+                preset_name = FALLINGSAND_PRESET_NAMES[_fs_preset_idx]
+                rule["name"] = f"Falling Sand ({FALLINGSAND_PRESETS[preset_name]['name']})"
+                _fs_init(rows, cols, preset_name)
+                grid = _fs_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord(">") and fallingsand:
+                # Next Falling Sand preset
+                _fs_preset_idx = (_fs_preset_idx + 1) % len(FALLINGSAND_PRESET_NAMES)
+                preset_name = FALLINGSAND_PRESET_NAMES[_fs_preset_idx]
+                rule["name"] = f"Falling Sand ({FALLINGSAND_PRESETS[preset_name]['name']})"
+                _fs_init(rows, cols, preset_name)
+                grid = _fs_to_grid(rows, cols)
                 generation = 0
                 history = [copy.deepcopy(grid)]
                 hist_idx = 0
@@ -5702,6 +6179,13 @@ def main():
              "Options: " + ", ".join(WATOR_PRESETS.keys()),
     )
     parser.add_argument(
+        "--fallingsand-preset",
+        choices=list(FALLINGSAND_PRESETS.keys()),
+        default="hourglass",
+        help="Falling Sand preset when --rule fallingsand (default: hourglass). "
+             "Options: " + ", ".join(FALLINGSAND_PRESETS.keys()),
+    )
+    parser.add_argument(
         "--discover",
         action="store_true",
         default=False,
@@ -5770,7 +6254,7 @@ def main():
     )
     args = parser.parse_args()
 
-    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx
+    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx, _fs_preset_idx
 
     # Headless batch-render mode: output PNG frames without terminal UI
     if args.render is not None:
@@ -5920,6 +6404,15 @@ def main():
             rule["name"] = f"Wa-Tor ({preset['name']})"
         _wator_init(args.rows, args.cols, wator_preset_name)
         grid = _wator_to_grid(args.rows, args.cols)
+    elif args.rule.lower() == "fallingsand":
+        # Falling Sand particle simulation
+        fs_preset_name = args.fallingsand_preset
+        if fs_preset_name in FALLINGSAND_PRESETS:
+            _fs_preset_idx = FALLINGSAND_PRESET_NAMES.index(fs_preset_name)
+            preset = FALLINGSAND_PRESETS[fs_preset_name]
+            rule["name"] = f"Falling Sand ({preset['name']})"
+        _fs_init(args.rows, args.cols, fs_preset_name)
+        grid = _fs_to_grid(args.rows, args.cols)
     else:
         place_pattern(grid, args.pattern)
 

@@ -1,6 +1,6 @@
 # Cellular Automaton — Terminal Simulator
 
-A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, and supports arbitrary rules via B/S notation.
+A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, and supports arbitrary rules via B/S notation.
 
 ## Usage
 
@@ -29,6 +29,8 @@ python3 life.py --rule turmite --turmite-preset llrr # symmetric 4-color turmite
 python3 life.py --rule turmite --turmite-preset highway4 # 4 ants interacting
 python3 life.py --rule wator                          # Wa-Tor predator-prey ecosystem
 python3 life.py --rule wator --wator-preset volatile  # fast boom-bust population cycles
+python3 life.py --rule fallingsand                     # Falling Sand particle simulation
+python3 life.py --rule fallingsand --fallingsand-preset volcano # volcanic eruption scene
 python3 life.py --script probabilistic_life        # run a user script on startup
 python3 life.py --script ~/my_script.py            # run a script from a file path
 python3 life.py --discover                         # evolve interesting rulesets via GA
@@ -46,12 +48,13 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--speed`   | 0.1       | Delay between generations (seconds)  |
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
 | `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
-| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, or B/S notation (e.g. `B36/S23`) |
+| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, or B/S notation (e.g. `B36/S23`) |
 | `--gs-preset` | `mitosis` | Gray-Scott parameter preset (`mitosis`, `coral`, `solitons`, `maze`, `spots`, `worms`, `waves`, `bubbles`) |
 | `--lenia-preset` | `orbium` | Lenia species preset (`orbium`, `geminium`, `scutium`, `hydrogeminium`, `wanderer`, `smooth_life`) |
 | `--eca-rule` | 30        | Wolfram rule number (0–255) for Elementary CA mode |
 | `--turmite-preset` | `langton` | Turmite preset (`langton`, `highway4`, `llrr`, `lrrl`, `rllr`, `spiral`, `fibonacci`, `turmite_1`) |
 | `--wator-preset` | `classic` | Wa-Tor ecosystem preset (`classic`, `fast_breed`, `sparse`, `sharks_rule`, `volatile`, `equilibrium`) |
+| `--fallingsand-preset` | `hourglass` | Falling Sand preset (`hourglass`, `rain`, `volcano`, `garden`, `sandbox`, `cascade`) |
 | `--script`  | —         | Run a Python script on startup (path or name from `~/.life-scripts/`) |
 | `--discover` | off      | Launch genetic algorithm rule discovery mode |
 | `--ga-generations` | 50 | Number of GA generations in discovery mode |
@@ -80,7 +83,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `B`       | Toggle Braille high-density rendering |
 | `T`       | Cycle topology (Torus → Klein Bottle → Möbius Strip → Bounded) |
 | `H`       | Toggle HashLife hyperspeed mode   |
-| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode |
+| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode |
 | `W`       | Enter a specific Wolfram rule number (0–255) in Elementary CA mode |
 | `G`       | Export history as animated GIF    |
 | `L`       | Load and run a script             |
@@ -165,6 +168,7 @@ All rules use Birth/Survival notation — a cell is born if it has exactly B nei
 | `elementary`| *(1D Wolfram)* | 256 elementary CA rules — see [Elementary CA](#elementary-cellular-automata) below |
 | `turmite`  | *(agent-based)* | Langton's Ant & turmites — see [Langton's Ant](#langtons-ant--turmites) below |
 | `wator`    | *(ecosystem)* | Predator-prey dynamics — see [Wa-Tor](#wa-tor-predator-prey-ecosystem) below |
+| `fallingsand` | *(particle physics)* | Gravity-driven sandbox — see [Falling Sand](#falling-sand-particle-simulation) below |
 
 Use `--rule <preset>` or `--rule B.../S...` for custom rules. Press `R` at runtime to cycle through presets.
 
@@ -440,6 +444,56 @@ Press `<` / `>` at runtime to cycle through presets. Each preset tunes fish bree
 - **HashLife** — incompatible (population dynamics simulation). Switching to Wa-Tor mode auto-deactivates HashLife.
 - **Population stats** (`g`) — the sparkline graph shows the predator-prey oscillation, making boom-bust cycles clearly visible.
 - **Randomize** (`r`) — re-initializes the ocean with the current preset's density parameters.
+
+## Falling Sand Particle Simulation
+
+Falling Sand is a gravity-driven particle physics sandbox — a fundamentally different simulation paradigm from the field-update cellular automata above. Instead of applying rules uniformly across the grid, each cell holds a material type with its own physics: sand falls and piles, water flows and fills containers, fire rises and spreads, smoke drifts and dissipates. The result is emergent behavior reminiscent of classic "powder game" sandboxes, rendered in the terminal.
+
+### Starting Falling Sand
+
+```bash
+python3 life.py --rule fallingsand                            # default Hourglass preset
+python3 life.py --rule fallingsand --fallingsand-preset volcano  # volcanic eruption
+python3 life.py --rule fallingsand --fallingsand-preset garden   # plants growing near water
+```
+
+### Materials
+
+Seven material types interact based on simple physical rules:
+
+| Material  | Color   | Behavior |
+|-----------|---------|----------|
+| **Sand**  | Yellow  | Falls under gravity, piles up, slides diagonally off peaks, sinks through liquids |
+| **Water** | Blue    | Falls, flows sideways to fill containers, displaced upward by sand |
+| **Stone** | White   | Static — forms walls, floors, and structures |
+| **Fire**  | Red     | Rises, spreads to adjacent plants and oil, produces smoke, burns out over time |
+| **Smoke** | Magenta | Rises, drifts sideways randomly, dissipates after a set lifetime |
+| **Plant** | Green   | Grows toward adjacent water (3% chance per tick), burns when fire is adjacent |
+| **Oil**   | Cyan    | Liquid that floats on water, highly flammable — ignites on contact with fire |
+
+### Presets
+
+Press `<` / `>` at runtime to cycle through presets:
+
+| Preset      | Character |
+|-------------|-----------|
+| `hourglass` | Sand fills the top half of a stone enclosure with a narrow neck — classic hourglass timer |
+| `rain`      | Water continuously spawns from the top over stone platforms that redirect the flow |
+| `volcano`   | Stone mountain with perpetual fire at the crater and oil pools at the base that catch fire |
+| `garden`    | Plants along a stone floor with water pools that feed growth |
+| `sandbox`   | Random scatter of all material types for free-form experimentation |
+| `cascade`   | Layered stone shelves with gaps; different materials (sand, water, oil) on each level cascade through |
+
+### Rendering
+
+- **Terminal** — each material renders as a double-width filled block (`██`) with a distinct color: yellow (sand), blue (water), white (stone), red (fire), magenta (smoke), green (plant), cyan (oil).
+- **Braille** — supported; color chosen by majority vote of the 2×4 block using the material color palette.
+
+### Interactions
+
+- **HashLife** — incompatible (particle physics simulation). Switching to Falling Sand via `R` auto-deactivates HashLife.
+- **Randomize** (`r`) — re-initializes the grid with the current preset.
+- **Status bar** — shows the current preset name.
 
 ## Population Statistics Dashboard
 
