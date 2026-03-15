@@ -1,6 +1,6 @@
 # Cellular Automaton — Terminal Simulator
 
-A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, and supports arbitrary rules via B/S notation.
+A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, and supports arbitrary rules via B/S notation.
 
 ## Usage
 
@@ -24,6 +24,9 @@ python3 life.py --rule lenia --lenia-preset smooth_life # organic SmoothLife sou
 python3 life.py --rule elementary                   # 1D Elementary CA (Rule 30)
 python3 life.py --rule elementary --eca-rule 110    # Turing-complete Rule 110
 python3 life.py --rule elementary --eca-rule 90     # Sierpinski triangles
+python3 life.py --rule turmite                      # Langton's Ant (classic RL)
+python3 life.py --rule turmite --turmite-preset llrr # symmetric 4-color turmite
+python3 life.py --rule turmite --turmite-preset highway4 # 4 ants interacting
 python3 life.py --script probabilistic_life        # run a user script on startup
 python3 life.py --script ~/my_script.py            # run a script from a file path
 python3 life.py --discover                         # evolve interesting rulesets via GA
@@ -41,10 +44,11 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--speed`   | 0.1       | Delay between generations (seconds)  |
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
 | `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
-| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, or B/S notation (e.g. `B36/S23`) |
+| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, or B/S notation (e.g. `B36/S23`) |
 | `--gs-preset` | `mitosis` | Gray-Scott parameter preset (`mitosis`, `coral`, `solitons`, `maze`, `spots`, `worms`, `waves`, `bubbles`) |
 | `--lenia-preset` | `orbium` | Lenia species preset (`orbium`, `geminium`, `scutium`, `hydrogeminium`, `wanderer`, `smooth_life`) |
 | `--eca-rule` | 30        | Wolfram rule number (0–255) for Elementary CA mode |
+| `--turmite-preset` | `langton` | Turmite preset (`langton`, `highway4`, `llrr`, `lrrl`, `rllr`, `spiral`, `fibonacci`, `turmite_1`) |
 | `--script`  | —         | Run a Python script on startup (path or name from `~/.life-scripts/`) |
 | `--discover` | off      | Launch genetic algorithm rule discovery mode |
 | `--ga-generations` | 50 | Number of GA generations in discovery mode |
@@ -73,7 +77,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `B`       | Toggle Braille high-density rendering |
 | `T`       | Cycle topology (Torus → Klein Bottle → Möbius Strip → Bounded) |
 | `H`       | Toggle HashLife hyperspeed mode   |
-| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode |
+| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode |
 | `W`       | Enter a specific Wolfram rule number (0–255) in Elementary CA mode |
 | `G`       | Export history as animated GIF    |
 | `L`       | Load and run a script             |
@@ -156,6 +160,7 @@ All rules use Birth/Survival notation — a cell is born if it has exactly B nei
 | `grayscott`| *(continuous)* | Reaction-diffusion — see [Gray-Scott](#gray-scott-reaction-diffusion) below |
 | `lenia`    | *(continuous)* | Smooth-kernel CA — see [Lenia](#lenia-continuous-cellular-automata) below |
 | `elementary`| *(1D Wolfram)* | 256 elementary CA rules — see [Elementary CA](#elementary-cellular-automata) below |
+| `turmite`  | *(agent-based)* | Langton's Ant & turmites — see [Langton's Ant](#langtons-ant--turmites) below |
 
 Use `--rule <preset>` or `--rule B.../S...` for custom rules. Press `R` at runtime to cycle through presets.
 
@@ -344,6 +349,48 @@ Lenia reuses the Gray-Scott continuous gradient color pipeline:
 - **HashLife** — incompatible (continuous values). Pressing `H` in Lenia mode is blocked; switching to Lenia via `R` auto-deactivates HashLife.
 - **Randomize** (`r`) — re-seeds with the current preset's seed pattern.
 - **Status bar** — displays current preset name.
+
+## Langton's Ant / Turmites
+
+Langton's Ant is an agent-based cellular automaton — fundamentally different from the field-update rules above. Instead of updating all cells simultaneously, one or more "ants" walk the grid, flipping cell colors and turning based on the cell they stand on. Classic Langton's Ant (rule "RL") produces chaotic behavior for ~10,000 steps before suddenly building an infinite diagonal "highway" — one of the most famous examples of emergent order from simple rules.
+
+Generalized turmites extend this to multiple colors and multiple internal states, producing symmetric patterns, square-building behavior, spirals, and other complex structures.
+
+### Starting Langton's Ant
+
+```bash
+python3 life.py --rule turmite                           # classic Langton's Ant (RL)
+python3 life.py --rule turmite --turmite-preset highway4  # 4 ants interacting
+python3 life.py --rule turmite --turmite-preset llrr      # symmetric 4-color pattern
+python3 life.py --rule turmite --turmite-preset turmite_1 # 2-state generalized turmite
+```
+
+### Presets
+
+Press `<` / `>` at runtime to cycle through presets:
+
+| Preset       | Character                                              |
+|--------------|--------------------------------------------------------|
+| `langton`    | Classic RL — chaotic phase then emergent highway       |
+| `highway4`   | 4 ants with classic RL rule — interacting highways     |
+| `llrr`       | Symmetric (LLRR) — 4-color symmetric growth            |
+| `lrrl`       | Square Builder (LRRL) — grows filled squares           |
+| `rllr`       | Triangle (RLLR) — triangular symmetric pattern         |
+| `spiral`     | Spiral (RLLLRLLL) — 8-color spiral structures          |
+| `fibonacci`  | Fibonacci (RLR) — 3-color chaotic growth               |
+| `turmite_1`  | 2-state turmite — complex behavior from internal state |
+
+### Rendering
+
+- **Terminal** — ant heads are rendered in red (color pair 21), multi-color cells use a gradient (green → cyan → blue → magenta → white).
+- **Braille** — supported; turmite-specific color mapping via majority vote of each 2×4 block.
+- **PNG** — headless rendering via `--render` is fully supported.
+
+### Interactions
+
+- **HashLife** — incompatible (agent-based simulation). Switching to turmite mode auto-deactivates HashLife.
+- **Topology** — ants respect the active topology (torus, Klein bottle, Möbius strip, bounded). On bounded topology, ants that would step out of bounds stay in place but still turn.
+- **Status bar** — shows ant count and `[<>]preset` hint.
 
 ## Population Statistics Dashboard
 

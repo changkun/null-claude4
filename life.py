@@ -40,6 +40,7 @@ RULES = {
     "grayscott": {"b": set(), "s": set(), "name": "Gray-Scott (Mitosis)", "grayscott": True},
     "elementary": {"b": set(), "s": set(), "name": "Elementary CA (Rule 30)", "elementary": True},
     "lenia":      {"b": set(), "s": set(), "name": "Lenia (Orbium)", "lenia": True},
+    "turmite":    {"b": set(), "s": set(), "name": "Langton's Ant", "turmite": True},
 }
 
 RULE_NAMES = list(RULES.keys())
@@ -130,6 +131,218 @@ def _is_elementary(rule):
 def _is_lenia(rule):
     """Check if the current rule is a Lenia continuous cellular automaton."""
     return rule.get("lenia", False)
+
+
+def _is_turmite(rule):
+    """Check if the current rule is a Langton's Ant / turmite."""
+    return rule.get("turmite", False)
+
+
+# --- Langton's Ant / Generalized Turmites ---
+# Agent-based cellular automaton: one or more "ants" walk the grid, flipping
+# cell colors and turning based on the cell color and the ant's internal state.
+# Classic Langton's Ant (RL) produces the famous emergent "highway" after ~10k
+# chaotic steps.  Generalized turmites use multi-state, multi-color transition
+# tables and produce stunning symmetric patterns.
+
+# Ant direction constants: 0=N, 1=E, 2=S, 3=W
+_ANT_DR = [-1, 0, 1, 0]
+_ANT_DC = [0, 1, 0, -1]
+
+# Turn codes for transition tables
+_TURN_L = 0   # turn left (counter-clockwise)
+_TURN_R = 1   # turn right (clockwise)
+_TURN_U = 2   # U-turn (180 degrees)
+_TURN_N = 3   # no turn (continue straight)
+
+_TURN_MAP = {"L": _TURN_L, "R": _TURN_R, "U": _TURN_U, "N": _TURN_N}
+
+# Turmite presets: each defines a transition table and number of colors/states.
+# Transition table format: table[state][color] = (new_color, turn, new_state)
+# Classic Langton's Ant: 1 state, 2 colors, rule string "RL"
+TURMITE_PRESETS = {
+    "langton": {
+        "name": "Langton's Ant (RL)",
+        "colors": 2,
+        "states": 1,
+        "table": {0: {0: (1, _TURN_R, 0), 1: (0, _TURN_L, 0)}},
+        "ants": 1,
+    },
+    "highway4": {
+        "name": "4-Ant Highway",
+        "colors": 2,
+        "states": 1,
+        "table": {0: {0: (1, _TURN_R, 0), 1: (0, _TURN_L, 0)}},
+        "ants": 4,
+    },
+    "llrr": {
+        "name": "Symmetric (LLRR)",
+        "colors": 4,
+        "states": 1,
+        "table": {0: {0: (1, _TURN_L, 0), 1: (2, _TURN_L, 0),
+                       2: (3, _TURN_R, 0), 3: (0, _TURN_R, 0)}},
+        "ants": 1,
+    },
+    "lrrl": {
+        "name": "Square Builder (LRRL)",
+        "colors": 4,
+        "states": 1,
+        "table": {0: {0: (1, _TURN_L, 0), 1: (2, _TURN_R, 0),
+                       2: (3, _TURN_R, 0), 3: (0, _TURN_L, 0)}},
+        "ants": 1,
+    },
+    "rllr": {
+        "name": "Triangle (RLLR)",
+        "colors": 4,
+        "states": 1,
+        "table": {0: {0: (1, _TURN_R, 0), 1: (2, _TURN_L, 0),
+                       2: (3, _TURN_L, 0), 3: (0, _TURN_R, 0)}},
+        "ants": 1,
+    },
+    "spiral": {
+        "name": "Spiral (RLLLRLLL)",
+        "colors": 8,
+        "states": 1,
+        "table": {0: {0: (1, _TURN_R, 0), 1: (2, _TURN_L, 0),
+                       2: (3, _TURN_L, 0), 3: (4, _TURN_L, 0),
+                       4: (5, _TURN_R, 0), 5: (6, _TURN_L, 0),
+                       6: (7, _TURN_L, 0), 7: (0, _TURN_L, 0)}},
+        "ants": 1,
+    },
+    "fibonacci": {
+        "name": "Fibonacci (RLR)",
+        "colors": 3,
+        "states": 1,
+        "table": {0: {0: (1, _TURN_R, 0), 1: (2, _TURN_L, 0),
+                       2: (0, _TURN_R, 0)}},
+        "ants": 1,
+    },
+    "turmite_1": {
+        "name": "Turmite (2-state)",
+        "colors": 2,
+        "states": 2,
+        "table": {0: {0: (1, _TURN_R, 1), 1: (1, _TURN_L, 0)},
+                  1: {0: (1, _TURN_L, 0), 1: (0, _TURN_R, 1)}},
+        "ants": 1,
+    },
+}
+
+TURMITE_PRESET_NAMES = list(TURMITE_PRESETS.keys())
+
+# Module-level state for the turmite simulation
+_turmite_grid = None       # 2D list of color values (0..num_colors-1)
+_turmite_ants = []         # list of (row, col, direction, state)
+_turmite_table = None      # transition table
+_turmite_num_colors = 2
+_turmite_preset_idx = 0
+
+
+def _turmite_init(rows, cols, preset_name=None):
+    """Initialize turmite grid and ants."""
+    global _turmite_grid, _turmite_ants, _turmite_table, _turmite_num_colors
+    if preset_name is None:
+        preset_name = TURMITE_PRESET_NAMES[_turmite_preset_idx]
+    preset = TURMITE_PRESETS[preset_name]
+    _turmite_table = preset["table"]
+    _turmite_num_colors = preset["colors"]
+    _turmite_grid = [[0] * cols for _ in range(rows)]
+    num_ants = preset.get("ants", 1)
+    _turmite_ants = []
+    cr, cc = rows // 2, cols // 2
+    for i in range(num_ants):
+        # Spread multiple ants around center
+        if num_ants == 1:
+            ar, ac = cr, cc
+        else:
+            offset = 3
+            if i == 0:
+                ar, ac = cr - offset, cc - offset
+            elif i == 1:
+                ar, ac = cr - offset, cc + offset
+            elif i == 2:
+                ar, ac = cr + offset, cc - offset
+            else:
+                ar, ac = cr + offset, cc + offset
+        _turmite_ants.append([ar % rows, ac % cols, 0, 0])  # row, col, dir, state
+
+
+def _turmite_step():
+    """Advance all ants by one step using the transition table."""
+    global _turmite_grid, _turmite_ants
+    rows = len(_turmite_grid)
+    cols = len(_turmite_grid[0])
+    for ant in _turmite_ants:
+        r, c, d, s = ant
+        color = _turmite_grid[r][c]
+        new_color, turn, new_state = _turmite_table[s][color]
+        _turmite_grid[r][c] = new_color
+        # Apply turn
+        if turn == _TURN_R:
+            d = (d + 1) % 4
+        elif turn == _TURN_L:
+            d = (d - 1) % 4
+        elif turn == _TURN_U:
+            d = (d + 2) % 4
+        # else _TURN_N: no change
+        # Move forward
+        nr = r + _ANT_DR[d]
+        nc = c + _ANT_DC[d]
+        # Wrap using topology
+        wrapped = _wrap_coords(nr, nc, rows, cols)
+        if wrapped is None:
+            # Bounded topology: ant stays in place but still turns
+            ant[2] = d
+            ant[3] = new_state
+            continue
+        ant[0], ant[1] = wrapped
+        ant[2] = d
+        ant[3] = new_state
+
+
+def _turmite_to_grid(rows, cols):
+    """Convert turmite state to a display grid.
+
+    Maps color values to age-like values for rendering.
+    Ant positions are marked with a high value for visibility.
+    """
+    # Scale colors to distinct display values
+    grid = [[0] * cols for _ in range(rows)]
+    if _turmite_num_colors <= 2:
+        # Classic binary: 0 = dead, color 1 = alive (age-like value)
+        for r in range(rows):
+            for c in range(cols):
+                grid[r][c] = _turmite_grid[r][c] * 5
+    else:
+        # Multi-color: map each color to a distinct age range
+        step_val = max(1, 100 // _turmite_num_colors)
+        for r in range(rows):
+            for c in range(cols):
+                color = _turmite_grid[r][c]
+                if color > 0:
+                    grid[r][c] = 1 + color * step_val
+    # Mark ant positions with a special high value
+    for ant in _turmite_ants:
+        r, c = ant[0], ant[1]
+        if 0 <= r < rows and 0 <= c < cols:
+            grid[r][c] = 99  # special marker for ant head
+    return grid
+
+
+def _turmite_color(val):
+    """Return curses color pair for a turmite cell value."""
+    if val == 99:
+        return 21       # ant head — bright red
+    if val == 0:
+        return 19       # background — dark
+    if val <= 5:
+        return 1        # green — color 1 (classic white)
+    if val <= 15:
+        return 5        # cyan
+    if val <= 30:
+        return 6        # blue
+    if val <= 50:
+        return 7        # magenta
+    return 20           # white — high color values
 
 
 # --- 1D Elementary Cellular Automata (Wolfram Rules) ---
@@ -1433,6 +1646,10 @@ def place_pattern(grid, name, row_off=None, col_off=None):
 def step(grid, rule=None):
     if rule is None:
         rule = RULES["life"]
+    if _is_turmite(rule):
+        rows, cols = len(grid), len(grid[0])
+        _turmite_step()
+        return _turmite_to_grid(rows, cols)
     if _is_elementary(rule):
         rows, cols = len(grid), len(grid[0])
         _eca_step()
@@ -2022,7 +2239,7 @@ def _render_braille_grid(grid, rows, cols, term_rows, term_cols):
     return lines
 
 
-def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False):
+def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=False):
     """Pick the curses color pair for a Braille cell based on majority vote.
 
     Examines the 2×4 block of grid cells that map to terminal position (tr, tc)
@@ -2038,6 +2255,10 @@ def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False):
                 if gs:
                     cp = _grayscott_color(age)
                     counts[cp] = counts.get(cp, 0) + 1
+                elif turmite:
+                    if age:
+                        cp = _turmite_color(age)
+                        counts[cp] = counts.get(cp, 0) + 1
                 elif age:
                     if ww:
                         cp = _wireworld_color(age)
@@ -2550,6 +2771,7 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
     ww = wireworld or _is_wireworld(rule)
     gs = _is_grayscott(rule)
     ln = _is_lenia(rule)
+    tm = _is_turmite(rule)
 
     # Initialize grid
     grid = make_grid(rows, cols)
@@ -2564,6 +2786,9 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
         grid, loaded_ww = _load_pattern_file(path, rows, cols)
         if loaded_ww:
             ww = True
+    elif tm:
+        _turmite_init(rows, cols)
+        grid = _turmite_to_grid(rows, cols)
     elif ln:
         preset = LENIA_PRESETS[LENIA_PRESET_NAMES[_lenia_preset_idx]]
         _lenia_init(rows, cols, preset.get("seed", "orbium"))
@@ -3325,6 +3550,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
     curses.init_pair(18, curses.COLOR_BLACK, curses.COLOR_YELLOW)  # cursor on conductor
     curses.init_pair(19, curses.COLOR_BLUE, -1)                    # Gray-Scott: very low V
     curses.init_pair(20, curses.COLOR_WHITE, -1)                   # Gray-Scott: peak V
+    curses.init_pair(21, curses.COLOR_RED, -1)                     # Turmite: ant head
 
     # Multiplayer state
     mp = network is not None
@@ -3386,6 +3612,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         gs = _is_grayscott(rule)
         eca = _is_elementary(rule)
         lenia = _is_lenia(rule)
+        turmite = _is_turmite(rule)
 
         # Track population
         pop = _count_population(grid)
@@ -3454,7 +3681,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     ch = braille_lines[tr][tc]
                     if ch == chr(_BRAILLE_BASE):
                         continue  # empty — skip for speed
-                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia)
+                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia, turmite=turmite)
                     try:
                         stdscr.addstr(tr, tc, ch, curses.color_pair(cp))
                     except curses.error:
@@ -3485,6 +3712,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                         attr = curses.color_pair(8)
                     elif detected_cells and (r, c) in detected_cells:
                         attr = curses.color_pair(12)
+                    elif turmite:
+                        attr = curses.color_pair(_turmite_color(age))
+                        cell_str = "\u2588\u2588" if age else "  "
                     elif gs or lenia:
                         attr = curses.color_pair(_grayscott_color(age))
                         cell_str = "\u2588\u2588" if age > 3 else "  "
@@ -3564,7 +3794,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 hashlife_str = ""
             gs_str = f" | F={_gs_feed:.4f} k={_gs_kill:.4f} [<>]preset" if gs else ""
             eca_str = f" | Rule {_eca_rule_num} [<>]cycle [W]rule#" if eca else ""
-            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{topo_str}{hashlife_str}{gs_str}{eca_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [T]opo [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
+            turmite_str = f" | {len(_turmite_ants)} ant(s) [<>]preset" if turmite else ""
+            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{topo_str}{hashlife_str}{gs_str}{eca_str}{turmite_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [T]opo [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
@@ -3946,6 +4177,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_gs = gs
                 was_eca = eca
                 was_lenia = lenia
+                was_turmite = turmite
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -3956,10 +4188,11 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_gs = _is_grayscott(rule)
                 new_eca = _is_elementary(rule)
                 new_lenia = _is_lenia(rule)
-                if new_ww or new_gs or new_eca or new_lenia:
+                new_turmite = _is_turmite(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite:
                     hashlife_active = False
                 # Mode transition: clear grid and re-initialize
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -3975,6 +4208,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                         preset = LENIA_PRESETS[LENIA_PRESET_NAMES[_lenia_preset_idx]]
                         _lenia_init(rows, cols, preset.get("seed", "orbium"))
                         grid = _lenia_to_grid(rows, cols)
+                    elif new_turmite:
+                        _turmite_init(rows, cols)
+                        grid = _turmite_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -4086,6 +4322,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_ww = ww
                 was_gs = gs
                 was_eca = eca
+                was_lenia = lenia
+                was_turmite = turmite
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -4095,9 +4333,11 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_ww = _is_wireworld(rule)
                 new_gs = _is_grayscott(rule)
                 new_eca = _is_elementary(rule)
-                if new_ww or new_gs or new_eca:
+                new_lenia = _is_lenia(rule)
+                new_turmite = _is_turmite(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite:
                     hashlife_active = False
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -4109,6 +4349,13 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_eca:
                         _eca_init(cols)
                         grid = _eca_to_grid(rows, cols)
+                    elif new_lenia:
+                        preset = LENIA_PRESETS[LENIA_PRESET_NAMES[_lenia_preset_idx]]
+                        _lenia_init(rows, cols, preset.get("seed", "orbium"))
+                        grid = _lenia_to_grid(rows, cols)
+                    elif new_turmite:
+                        _turmite_init(rows, cols)
+                        grid = _turmite_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -4312,6 +4559,30 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 preset = LENIA_PRESETS[LENIA_PRESET_NAMES[_lenia_preset_idx]]
                 _lenia_init(rows, cols, preset.get("seed", "orbium"))
                 grid = _lenia_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord("<") and turmite:
+                # Previous turmite preset
+                _turmite_preset_idx = (_turmite_preset_idx - 1) % len(TURMITE_PRESET_NAMES)
+                preset_name = TURMITE_PRESET_NAMES[_turmite_preset_idx]
+                rule["name"] = TURMITE_PRESETS[preset_name]["name"]
+                _turmite_init(rows, cols, preset_name)
+                grid = _turmite_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord(">") and turmite:
+                # Next turmite preset
+                _turmite_preset_idx = (_turmite_preset_idx + 1) % len(TURMITE_PRESET_NAMES)
+                preset_name = TURMITE_PRESET_NAMES[_turmite_preset_idx]
+                rule["name"] = TURMITE_PRESETS[preset_name]["name"]
+                _turmite_init(rows, cols, preset_name)
+                grid = _turmite_to_grid(rows, cols)
                 generation = 0
                 history = [copy.deepcopy(grid)]
                 hist_idx = 0
@@ -5116,6 +5387,13 @@ def main():
              "Options: " + ", ".join(LENIA_PRESETS.keys()),
     )
     parser.add_argument(
+        "--turmite-preset",
+        choices=list(TURMITE_PRESETS.keys()),
+        default="langton",
+        help="Turmite preset when --rule turmite (default: langton). "
+             "Options: " + ", ".join(TURMITE_PRESETS.keys()),
+    )
+    parser.add_argument(
         "--discover",
         action="store_true",
         default=False,
@@ -5184,7 +5462,7 @@ def main():
     )
     args = parser.parse_args()
 
-    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx
+    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx
 
     # Headless batch-render mode: output PNG frames without terminal UI
     if args.render is not None:
@@ -5316,6 +5594,15 @@ def main():
             rule["name"] = f"Lenia ({preset['name']})"
         _lenia_init(args.rows, args.cols, preset.get("seed", "orbium"))
         grid = _lenia_to_grid(args.rows, args.cols)
+    elif args.rule.lower() == "turmite":
+        # Langton's Ant / generalized turmites
+        turmite_preset_name = args.turmite_preset
+        if turmite_preset_name in TURMITE_PRESETS:
+            _turmite_preset_idx = TURMITE_PRESET_NAMES.index(turmite_preset_name)
+            preset = TURMITE_PRESETS[turmite_preset_name]
+            rule["name"] = preset["name"]
+        _turmite_init(args.rows, args.cols, turmite_preset_name)
+        grid = _turmite_to_grid(args.rows, args.cols)
     else:
         place_pattern(grid, args.pattern)
 
