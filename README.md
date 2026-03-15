@@ -52,6 +52,9 @@ Press `e` to enter an interactive cell editor. The simulation pauses and a curso
 |-----------------|---------------------------|
 | Arrow keys      | Move cursor (wraps edges) |
 | `Enter` / `Space` | Toggle cell alive/dead |
+| `v`             | Enter select mode (rectangular region) |
+| `p`             | Paste clipboard at cursor |
+| `P`             | Open pattern stamp picker |
 | `s`             | Save grid to a `.cells` file |
 | `l`             | Load a pattern (picker or path) |
 | `c`             | Clear the entire grid     |
@@ -59,6 +62,34 @@ Press `e` to enter an interactive cell editor. The simulation pauses and a curso
 | `g`             | Toggle population stats panel |
 | `e`             | Exit editor, stay paused  |
 | `q`             | Quit                      |
+
+#### Select Mode
+
+Press `v` in the editor to start a rectangular selection at the cursor. The selection is highlighted in cyan.
+
+| Key        | Action                          |
+|------------|----------------------------------|
+| Arrow keys | Extend selection                 |
+| `y`        | Yank (copy) region to clipboard  |
+| `x`        | Cut region (copy + clear cells)  |
+| `Esc`      | Cancel selection                 |
+
+#### Paste Preview
+
+Press `p` to enter paste preview (requires a clipboard). The stamp is shown in magenta at the cursor position.
+
+| Key        | Action                          |
+|------------|----------------------------------|
+| Arrow keys | Move stamp                       |
+| `Enter`    | Confirm — stamp cells onto grid  |
+| `>` / `<`  | Rotate clipboard 90° CW / CCW   |
+| `f`        | Flip horizontally                |
+| `F`        | Flip vertically                  |
+| `Esc`      | Cancel paste                     |
+
+#### Pattern Stamp Picker
+
+Press `P` in the editor to open an interactive picker that lists all built-in patterns (glider, pulsar, gosper gun, etc.) with their dimensions. Select one to load it into the clipboard and enter paste preview.
 
 ### Save / Load
 
@@ -108,6 +139,15 @@ The simulator records up to 10,000 generations of grid history, letting you rewi
 - **History reset** — randomizing, clearing, or loading a pattern resets the history buffer.
 
 This pairs with the existing pause/step controls and the stats panel — you can rewind to an interesting moment, study the population graph, then fork and let the simulation evolve differently.
+
+## Clipboard & Pattern Stamps
+
+The editor includes a full clipboard system for working with rectangular regions of cells — select, copy, paste, rotate, and flip. This turns the editor from a pixel-by-pixel tool into a pattern construction workbench for building complex structures like guns, puffers, and breeders.
+
+- **Select** (`v`) a rectangular region, then **yank** (`y`) or **cut** (`x`) it to the clipboard.
+- **Paste** (`p`) positions a preview at the cursor — move it around, **rotate** (`>`/`<`) 90° in either direction, or **flip** (`f`/`F`) horizontally/vertically before confirming with `Enter`.
+- **Pattern stamps** (`P`) lets you load any built-in pattern directly into the clipboard for placement.
+- The clipboard persists across paste operations, so you can stamp the same pattern multiple times. Combine with save/load to build a reusable `.cells` snippet library.
 
 ## Design Notes
 

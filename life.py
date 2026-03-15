@@ -360,6 +360,58 @@ def _draw_stats_panel(stdscr, pop_history, generation, panel_width, max_y, max_x
         pass
 
 
+def _extract_region(grid, r1, c1, r2, c2):
+    """Extract a rectangular region from the grid as a 2D list of 0/1."""
+    min_r, max_r = min(r1, r2), max(r1, r2)
+    min_c, max_c = min(c1, c2), max(c1, c2)
+    region = []
+    for r in range(min_r, max_r + 1):
+        row = []
+        for c in range(min_c, max_c + 1):
+            row.append(1 if grid[r][c] else 0)
+        region.append(row)
+    return region
+
+
+def _rotate_cw(stamp):
+    """Rotate a 2D stamp 90° clockwise."""
+    if not stamp or not stamp[0]:
+        return stamp
+    r, c = len(stamp), len(stamp[0])
+    return [[stamp[r - 1 - j][i] for j in range(r)] for i in range(c)]
+
+
+def _rotate_ccw(stamp):
+    """Rotate a 2D stamp 90° counter-clockwise."""
+    if not stamp or not stamp[0]:
+        return stamp
+    r, c = len(stamp), len(stamp[0])
+    return [[stamp[j][c - 1 - i] for j in range(r)] for i in range(c)]
+
+
+def _flip_h(stamp):
+    """Flip a 2D stamp horizontally."""
+    return [row[::-1] for row in stamp]
+
+
+def _flip_v(stamp):
+    """Flip a 2D stamp vertically."""
+    return stamp[::-1]
+
+
+def _pattern_to_stamp(name):
+    """Convert a PATTERNS entry to a 2D stamp."""
+    cells = PATTERNS[name]
+    if not cells or name == "random":
+        return None
+    max_r = max(r for r, c in cells)
+    max_c = max(c for r, c in cells)
+    stamp = [[0] * (max_c + 1) for _ in range(max_r + 1)]
+    for r, c in cells:
+        stamp[r][c] = 1
+    return stamp
+
+
 def run(stdscr, grid, speed, rule=None):
     if rule is None:
         rule = RULES["life"]
@@ -374,6 +426,8 @@ def run(stdscr, grid, speed, rule=None):
     curses.init_pair(5, curses.COLOR_CYAN, -1)        # age 4-8: young (cyan)
     curses.init_pair(6, curses.COLOR_BLUE, -1)        # age 9-20: mature (blue)
     curses.init_pair(7, curses.COLOR_MAGENTA, -1)     # age 21+: ancient (magenta)
+    curses.init_pair(8, curses.COLOR_BLACK, curses.COLOR_CYAN)    # selection highlight
+    curses.init_pair(9, curses.COLOR_BLACK, curses.COLOR_MAGENTA) # paste preview
 
     rows, cols = len(grid), len(grid[0])
     generation = 0
@@ -384,6 +438,13 @@ def run(stdscr, grid, speed, rule=None):
     delay = speed
     pop_history = []
     max_pop_history = 500  # Rolling window of population data
+
+    # Clipboard / stamp system
+    clipboard = None        # 2D list (rows of 0/1) or None
+    selecting = False       # True when in select mode
+    sel_anchor_r = 0        # Selection anchor (where 'v' was pressed)
+    sel_anchor_c = 0
+    pasting = False         # True when in paste-preview mode
 
     # Time-travel history
     history = [copy.deepcopy(grid)]  # history[0] = initial state
@@ -418,13 +479,36 @@ def run(stdscr, grid, speed, rule=None):
         vis_rows = min(rows, max_y - 1)
         vis_cols = min(cols, (grid_max_x - 1) // 2)
 
+        # Precompute selection bounds
+        sel_min_r = sel_max_r = sel_min_c = sel_max_c = -1
+        if editing and selecting:
+            sel_min_r, sel_max_r = min(sel_anchor_r, cursor_r), max(sel_anchor_r, cursor_r)
+            sel_min_c, sel_max_c = min(sel_anchor_c, cursor_c), max(sel_anchor_c, cursor_c)
+
+        # Precompute paste preview cells
+        paste_cells = set()
+        if editing and pasting and clipboard:
+            stamp_h, stamp_w = len(clipboard), len(clipboard[0])
+            for pr in range(stamp_h):
+                for pc in range(stamp_w):
+                    gr, gc = cursor_r + pr, cursor_c + pc
+                    if 0 <= gr < rows and 0 <= gc < cols and clipboard[pr][pc]:
+                        paste_cells.add((gr, gc))
+
         # Draw grid
         for r in range(vis_rows):
             for c in range(vis_cols):
                 age = grid[r][c]
                 cell_str = "\u2588\u2588" if age else "  "
-                if editing and r == cursor_r and c == cursor_c:
+                if editing and r == cursor_r and c == cursor_c and not pasting:
                     attr = curses.color_pair(4) if age else curses.color_pair(3)
+                elif (r, c) in paste_cells:
+                    attr = curses.color_pair(9)
+                    cell_str = "\u2588\u2588"
+                elif editing and pasting and r == cursor_r and c == cursor_c:
+                    attr = curses.color_pair(9)
+                elif selecting and sel_min_r <= r <= sel_max_r and sel_min_c <= c <= sel_max_c:
+                    attr = curses.color_pair(8)
                 else:
                     attr = curses.color_pair(_age_color(age)) if age else curses.color_pair(1)
                 try:
@@ -441,8 +525,15 @@ def run(stdscr, grid, speed, rule=None):
         hist_str = ""
         if browsing_history:
             hist_str = f" | HISTORY {hist_idx}/{len(history)-1}"
-        if editing:
-            status = f" EDITOR ({cursor_r},{cursor_c}) | Gen {generation} | {rule_label} | [arrows]move [enter/space]toggle [s]ave [l]oad [c]lear [R]ule [e]exit editor [q]uit"
+        if editing and pasting:
+            stamp_h, stamp_w = len(clipboard), len(clipboard[0]) if clipboard else (0, 0)
+            status = f" PASTE ({cursor_r},{cursor_c}) {stamp_h}x{stamp_w} | [arrows]move [enter]confirm [>/<]rotate [f/F]flip h/v [esc]cancel"
+        elif editing and selecting:
+            sel_h = abs(cursor_r - sel_anchor_r) + 1
+            sel_w = abs(cursor_c - sel_anchor_c) + 1
+            status = f" SELECT ({sel_anchor_r},{sel_anchor_c})->({cursor_r},{cursor_c}) {sel_h}x{sel_w} | [arrows]resize [y]ank [x]cut [esc]cancel"
+        elif editing:
+            status = f" EDITOR ({cursor_r},{cursor_c}) | Gen {generation} | {rule_label} | [arrows]move [enter/space]toggle [v]select [p]aste [P]attern stamp [s]ave [l]oad [c]lear [R]ule [e]exit [q]uit"
         else:
             pop_str = f" | Pop {pop}" if not show_stats else ""
             state_str = 'REWOUND' if browsing_history else ('PAUSED' if paused else 'Running')
@@ -459,7 +550,61 @@ def run(stdscr, grid, speed, rule=None):
         if key == ord("q"):
             break
 
-        if editing:
+        if editing and pasting:
+            # Paste-preview mode controls
+            if key == curses.KEY_UP:
+                cursor_r = (cursor_r - 1) % rows
+            elif key == curses.KEY_DOWN:
+                cursor_r = (cursor_r + 1) % rows
+            elif key == curses.KEY_LEFT:
+                cursor_c = (cursor_c - 1) % cols
+            elif key == curses.KEY_RIGHT:
+                cursor_c = (cursor_c + 1) % cols
+            elif key in (ord("\n"), curses.KEY_ENTER):
+                # Confirm paste: stamp clipboard onto grid
+                if clipboard:
+                    for pr in range(len(clipboard)):
+                        for pc in range(len(clipboard[0])):
+                            gr, gc = cursor_r + pr, cursor_c + pc
+                            if 0 <= gr < rows and 0 <= gc < cols and clipboard[pr][pc]:
+                                grid[gr][gc] = 1
+                pasting = False
+            elif key == 27:  # Escape
+                pasting = False
+            elif key == ord(">") or key == ord("."):
+                clipboard = _rotate_cw(clipboard)
+            elif key == ord("<") or key == ord(","):
+                clipboard = _rotate_ccw(clipboard)
+            elif key == ord("f"):
+                clipboard = _flip_h(clipboard)
+            elif key == ord("F"):
+                clipboard = _flip_v(clipboard)
+        elif editing and selecting:
+            # Selection mode controls
+            if key == curses.KEY_UP:
+                cursor_r = (cursor_r - 1) % rows
+            elif key == curses.KEY_DOWN:
+                cursor_r = (cursor_r + 1) % rows
+            elif key == curses.KEY_LEFT:
+                cursor_c = (cursor_c - 1) % cols
+            elif key == curses.KEY_RIGHT:
+                cursor_c = (cursor_c + 1) % cols
+            elif key == ord("y"):
+                # Yank (copy) selected region
+                clipboard = _extract_region(grid, sel_anchor_r, sel_anchor_c, cursor_r, cursor_c)
+                selecting = False
+            elif key == ord("x"):
+                # Cut selected region
+                clipboard = _extract_region(grid, sel_anchor_r, sel_anchor_c, cursor_r, cursor_c)
+                min_r, max_r2 = min(sel_anchor_r, cursor_r), max(sel_anchor_r, cursor_r)
+                min_c, max_c2 = min(sel_anchor_c, cursor_c), max(sel_anchor_c, cursor_c)
+                for r2 in range(min_r, max_r2 + 1):
+                    for c2 in range(min_c, max_c2 + 1):
+                        grid[r2][c2] = 0
+                selecting = False
+            elif key == 27:  # Escape
+                selecting = False
+        elif editing:
             # Editor-mode controls
             if key == curses.KEY_UP:
                 cursor_r = (cursor_r - 1) % rows
@@ -471,6 +616,57 @@ def run(stdscr, grid, speed, rule=None):
                 cursor_c = (cursor_c + 1) % cols
             elif key in (ord("\n"), ord(" "), curses.KEY_ENTER):
                 grid[cursor_r][cursor_c] = 0 if grid[cursor_r][cursor_c] else 1
+            elif key == ord("v"):
+                # Enter select mode
+                selecting = True
+                sel_anchor_r = cursor_r
+                sel_anchor_c = cursor_c
+            elif key == ord("p"):
+                # Paste from clipboard
+                if clipboard:
+                    pasting = True
+            elif key == ord("P"):
+                # Pattern stamp picker: load a built-in pattern to clipboard
+                stamp_names = [n for n in PATTERNS if n != "random"]
+                if stamp_names:
+                    sel = 0
+                    picking = True
+                    stdscr.nodelay(False)
+                    while picking:
+                        stdscr.erase()
+                        try:
+                            stdscr.addstr(0, 0, "Pick stamp (arrows to select, enter to load, esc to cancel):",
+                                          curses.color_pair(2))
+                        except curses.error:
+                            pass
+                        for i, sn in enumerate(stamp_names):
+                            if i + 2 >= max_y - 1:
+                                break
+                            attr = curses.A_REVERSE if i == sel else 0
+                            cells = PATTERNS[sn]
+                            dims = ""
+                            if cells:
+                                mr = max(r for r, c in cells) + 1
+                                mc = max(c for r, c in cells) + 1
+                                dims = f"  ({mr}x{mc})"
+                            try:
+                                stdscr.addstr(i + 2, 2, sn + dims, attr)
+                            except curses.error:
+                                pass
+                        stdscr.refresh()
+                        pk = stdscr.getch()
+                        if pk == curses.KEY_UP:
+                            sel = (sel - 1) % len(stamp_names)
+                        elif pk == curses.KEY_DOWN:
+                            sel = (sel + 1) % len(stamp_names)
+                        elif pk in (ord("\n"), curses.KEY_ENTER):
+                            clipboard = _pattern_to_stamp(stamp_names[sel])
+                            if clipboard:
+                                pasting = True
+                            picking = False
+                        elif pk == 27:
+                            picking = False
+                    stdscr.nodelay(True)
             elif key == ord("c"):
                 for r2 in range(rows):
                     for c2 in range(cols):
