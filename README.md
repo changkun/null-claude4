@@ -29,7 +29,20 @@ python3 life.py --rows 60 --cols 120 --speed 0.2   # custom grid and speed
 | `+` / `-` | Speed up / slow down             |
 | `n`       | Step one generation (when paused) |
 | `r`       | Randomize the grid                |
+| `e`       | Enter editor mode (auto-pauses)   |
 | `q`       | Quit                              |
+
+### Editor Mode
+
+Press `e` to enter an interactive cell editor. The simulation pauses and a cursor appears on the grid (yellow highlight on dead cells, green on live cells).
+
+| Key             | Action                    |
+|-----------------|---------------------------|
+| Arrow keys      | Move cursor (wraps edges) |
+| `Enter` / `Space` | Toggle cell alive/dead |
+| `c`             | Clear the entire grid     |
+| `e`             | Exit editor, stay paused  |
+| `q`             | Quit                      |
 
 ## Design Notes
 

@@ -104,28 +104,40 @@ def run(stdscr, grid, speed):
     curses.use_default_colors()
     curses.init_pair(1, curses.COLOR_GREEN, -1)
     curses.init_pair(2, curses.COLOR_WHITE, -1)
+    curses.init_pair(3, curses.COLOR_BLACK, curses.COLOR_YELLOW)   # cursor on dead cell
+    curses.init_pair(4, curses.COLOR_BLACK, curses.COLOR_GREEN)    # cursor on live cell
 
     rows, cols = len(grid), len(grid[0])
     generation = 0
     paused = False
+    editing = False
+    cursor_r, cursor_c = rows // 2, cols // 2
     delay = speed
 
     while True:
         stdscr.erase()
         max_y, max_x = stdscr.getmaxyx()
+        vis_rows = min(rows, max_y - 1)
+        vis_cols = min(cols, (max_x - 1) // 2)
 
         # Draw grid
-        for r in range(min(rows, max_y - 1)):
-            line = ""
-            for c in range(min(cols, (max_x - 1) // 2)):
-                line += "\u2588\u2588" if grid[r][c] else "  "
-            try:
-                stdscr.addstr(r, 0, line, curses.color_pair(1) if grid[r][0] or True else 0)
-            except curses.error:
-                pass
+        for r in range(vis_rows):
+            for c in range(vis_cols):
+                cell_str = "\u2588\u2588" if grid[r][c] else "  "
+                if editing and r == cursor_r and c == cursor_c:
+                    attr = curses.color_pair(4) if grid[r][c] else curses.color_pair(3)
+                else:
+                    attr = curses.color_pair(1)
+                try:
+                    stdscr.addstr(r, c * 2, cell_str, attr)
+                except curses.error:
+                    pass
 
         # Status bar
-        status = f" Gen {generation} | Delay {delay:.2f}s | {'PAUSED' if paused else 'Running'} | [space]pause [+/-]speed [r]andom [q]uit"
+        if editing:
+            status = f" EDITOR ({cursor_r},{cursor_c}) | Gen {generation} | [arrows]move [enter/space]toggle [c]lear [e]exit editor [q]uit"
+        else:
+            status = f" Gen {generation} | Delay {delay:.2f}s | {'PAUSED' if paused else 'Running'} | [space]pause [e]dit [+/-]speed [r]andom [n]ext [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
@@ -137,23 +149,48 @@ def run(stdscr, grid, speed):
         key = stdscr.getch()
         if key == ord("q"):
             break
-        elif key == ord(" "):
-            paused = not paused
-        elif key == ord("+") or key == ord("="):
-            delay = max(0.01, delay - 0.05)
-        elif key == ord("-") or key == ord("_"):
-            delay = min(2.0, delay + 0.05)
-        elif key == ord("r"):
-            import random
-            for r2 in range(rows):
-                for c2 in range(cols):
-                    grid[r2][c2] = random.randint(0, 1)
-            generation = 0
-        elif key == ord("n") and paused:
-            grid = step(grid)
-            generation += 1
 
-        if not paused:
+        if editing:
+            # Editor-mode controls
+            if key == curses.KEY_UP:
+                cursor_r = (cursor_r - 1) % rows
+            elif key == curses.KEY_DOWN:
+                cursor_r = (cursor_r + 1) % rows
+            elif key == curses.KEY_LEFT:
+                cursor_c = (cursor_c - 1) % cols
+            elif key == curses.KEY_RIGHT:
+                cursor_c = (cursor_c + 1) % cols
+            elif key in (ord("\n"), ord(" "), curses.KEY_ENTER):
+                grid[cursor_r][cursor_c] ^= 1
+            elif key == ord("c"):
+                for r2 in range(rows):
+                    for c2 in range(cols):
+                        grid[r2][c2] = 0
+                generation = 0
+            elif key == ord("e"):
+                editing = False
+        else:
+            # Normal-mode controls
+            if key == ord(" "):
+                paused = not paused
+            elif key == ord("+") or key == ord("="):
+                delay = max(0.01, delay - 0.05)
+            elif key == ord("-") or key == ord("_"):
+                delay = min(2.0, delay + 0.05)
+            elif key == ord("r"):
+                import random
+                for r2 in range(rows):
+                    for c2 in range(cols):
+                        grid[r2][c2] = random.randint(0, 1)
+                generation = 0
+            elif key == ord("n") and paused:
+                grid = step(grid)
+                generation += 1
+            elif key == ord("e"):
+                paused = True
+                editing = True
+
+        if not paused and not editing:
             grid = step(grid)
             generation += 1
 
