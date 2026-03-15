@@ -44,6 +44,7 @@ RULES = {
     "wator":      {"b": set(), "s": set(), "name": "Wa-Tor (Classic)", "wator": True},
     "fallingsand": {"b": set(), "s": set(), "name": "Falling Sand", "fallingsand": True},
     "physarum": {"b": set(), "s": set(), "name": "Physarum (dendritic)", "physarum": True},
+    "sandpile": {"b": set(), "s": set(), "name": "Sandpile (single-source)", "sandpile": True},
 }
 
 RULE_NAMES = list(RULES.keys())
@@ -154,6 +155,11 @@ def _is_fallingsand(rule):
 def _is_physarum(rule):
     """Check if the current rule is the Physarum slime mold simulation."""
     return rule.get("physarum", False)
+
+
+def _is_sandpile(rule):
+    """Check if the current rule is the Abelian Sandpile simulation."""
+    return rule.get("sandpile", False)
 
 
 # --- Wa-Tor Predator-Prey Ecosystem ---
@@ -1549,6 +1555,185 @@ def _phys_to_grid(rows, cols):
         return grid
 
 
+# --- Abelian Sandpile: Self-Organized Criticality ---
+# The Bak-Tang-Wiesenfeld sandpile: cells hold grain counts 0-3.  When a cell
+# reaches 4 grains it "topples", sending one grain to each of its four
+# von-Neumann neighbours.  This simple local rule produces fractal diamond
+# patterns and power-law avalanche distributions — the canonical example of
+# self-organized criticality.
+
+SANDPILE_PRESETS = {
+    "single-source": {
+        "name": "Single Source",
+        "description": "Drop grains at center — watch fractal diamonds emerge",
+        "mode": "center",
+        "grains_per_step": 4,
+    },
+    "random-rain": {
+        "name": "Random Rain",
+        "description": "Uniform random grain drops across the grid",
+        "mode": "rain",
+        "grains_per_step": 8,
+    },
+    "identity": {
+        "name": "Identity Element",
+        "description": "The identity element of the sandpile group (all 6s toppled)",
+        "mode": "identity",
+        "grains_per_step": 0,
+    },
+    "max-stable": {
+        "name": "Max Stable",
+        "description": "Every cell at 3 — one grain triggers a massive avalanche",
+        "mode": "max_stable",
+        "grains_per_step": 0,
+    },
+}
+SANDPILE_PRESET_NAMES = list(SANDPILE_PRESETS.keys())
+
+_sp_grid = None          # 2D list of int grain counts
+_sp_rows, _sp_cols = 0, 0
+_sp_preset_idx = 0
+_sp_mode = "center"      # current dropping mode
+_sp_grains_per_step = 4  # grains added per simulation step
+_sp_total_grains = 0     # total grains dropped so far
+
+
+def _sp_init(rows, cols, preset_name=None):
+    """Initialize the Abelian Sandpile grid."""
+    global _sp_grid, _sp_rows, _sp_cols, _sp_mode, _sp_grains_per_step, _sp_total_grains
+    _sp_rows, _sp_cols = rows, cols
+    if preset_name is None:
+        preset_name = SANDPILE_PRESET_NAMES[_sp_preset_idx]
+    preset = SANDPILE_PRESETS[preset_name]
+    _sp_mode = preset["mode"]
+    _sp_grains_per_step = preset["grains_per_step"]
+    _sp_total_grains = 0
+
+    if _HAS_NUMPY:
+        _sp_grid = np.zeros((rows, cols), dtype=np.int64)
+    else:
+        _sp_grid = [[0] * cols for _ in range(rows)]
+
+    if _sp_mode == "identity":
+        # Start from all 6s — toppling this to stable produces the identity
+        if _HAS_NUMPY:
+            _sp_grid[:] = 6
+        else:
+            for r in range(rows):
+                for c in range(cols):
+                    _sp_grid[r][c] = 6
+    elif _sp_mode == "max_stable":
+        # Every cell at 3 (maximally stable)
+        if _HAS_NUMPY:
+            _sp_grid[:] = 3
+        else:
+            for r in range(rows):
+                for c in range(cols):
+                    _sp_grid[r][c] = 3
+
+
+def _sp_topple():
+    """Topple all unstable cells (height >= 4) until the pile is stable.
+
+    Returns the number of individual cell topplings (avalanche size).
+    """
+    global _sp_grid
+    topplings = 0
+    rows, cols = _sp_rows, _sp_cols
+
+    if _HAS_NUMPY:
+        while True:
+            unstable = _sp_grid >= 4
+            if not np.any(unstable):
+                break
+            topple_count = _sp_grid // 4
+            topple_mask = topple_count > 0
+            topplings += int(np.sum(topple_mask))
+            _sp_grid -= topple_count * 4
+            # Distribute to neighbours
+            if rows > 1:
+                _sp_grid[1:, :] += topple_count[:-1, :]   # down
+                _sp_grid[:-1, :] += topple_count[1:, :]   # up
+            if cols > 1:
+                _sp_grid[:, 1:] += topple_count[:, :-1]   # right
+                _sp_grid[:, :-1] += topple_count[:, 1:]   # left
+    else:
+        while True:
+            found = False
+            for r in range(rows):
+                for c in range(cols):
+                    if _sp_grid[r][c] >= 4:
+                        found = True
+                        topple_count = _sp_grid[r][c] // 4
+                        _sp_grid[r][c] -= topple_count * 4
+                        topplings += 1
+                        if r > 0:
+                            _sp_grid[r - 1][c] += topple_count
+                        if r < rows - 1:
+                            _sp_grid[r + 1][c] += topple_count
+                        if c > 0:
+                            _sp_grid[r][c - 1] += topple_count
+                        if c < cols - 1:
+                            _sp_grid[r][c + 1] += topple_count
+            if not found:
+                break
+    return topplings
+
+
+def _sp_step():
+    """Add grains according to current mode, then topple to stability."""
+    global _sp_total_grains
+    rows, cols = _sp_rows, _sp_cols
+
+    if _sp_mode == "center":
+        cr, cc = rows // 2, cols // 2
+        if _HAS_NUMPY:
+            _sp_grid[cr, cc] += _sp_grains_per_step
+        else:
+            _sp_grid[cr][cc] += _sp_grains_per_step
+        _sp_total_grains += _sp_grains_per_step
+    elif _sp_mode == "rain":
+        import random as _rng
+        for _ in range(_sp_grains_per_step):
+            r = _rng.randint(0, rows - 1)
+            c = _rng.randint(0, cols - 1)
+            if _HAS_NUMPY:
+                _sp_grid[r, c] += 1
+            else:
+                _sp_grid[r][c] += 1
+            _sp_total_grains += 1
+    # identity and max_stable modes add no grains — just topple
+
+    _sp_topple()
+
+
+def _sp_to_grid(rows, cols):
+    """Convert sandpile heights to grid values 0-100 for rendering."""
+    if _HAS_NUMPY:
+        # Map 0->0, 1->25, 2->50, 3->75, >=4 shouldn't happen after toppling
+        out = np.clip(_sp_grid, 0, 3) * 25
+        return out.astype(int).tolist()
+    grid = [[0] * cols for _ in range(rows)]
+    for r in range(rows):
+        for c in range(cols):
+            v = _sp_grid[r][c]
+            grid[r][c] = min(v, 3) * 25
+    return grid
+
+
+def _sp_color(val):
+    """Map sandpile grid value to a curses color pair."""
+    if val <= 0:
+        return 1       # empty — default background
+    if val <= 25:
+        return 5       # height 1 — cyan
+    if val <= 50:
+        return 1       # height 2 — green
+    if val <= 75:
+        return 15      # height 3 — yellow
+    return 21          # overflow (shouldn't occur) — red
+
+
 # --- Lenia: Continuous Smooth-Kernel Cellular Automata ---
 # Generalizes Conway's Life into continuous space and time using smooth
 # ring-shaped kernels and a Gaussian growth function.
@@ -2647,6 +2832,10 @@ def place_pattern(grid, name, row_off=None, col_off=None):
 def step(grid, rule=None):
     if rule is None:
         rule = RULES["life"]
+    if _is_sandpile(rule):
+        rows, cols = len(grid), len(grid[0])
+        _sp_step()
+        return _sp_to_grid(rows, cols)
     if _is_physarum(rule):
         rows, cols = len(grid), len(grid[0])
         _phys_step()
@@ -3252,7 +3441,7 @@ def _render_braille_grid(grid, rows, cols, term_rows, term_cols):
     return lines
 
 
-def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=False, wator=False, fallingsand=False):
+def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=False, wator=False, fallingsand=False, sandpile=False):
     """Pick the curses color pair for a Braille cell based on majority vote.
 
     Examines the 2×4 block of grid cells that map to terminal position (tr, tc)
@@ -3268,6 +3457,10 @@ def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=Fals
                 if gs:
                     cp = _grayscott_color(age)
                     counts[cp] = counts.get(cp, 0) + 1
+                elif sandpile:
+                    if age:
+                        cp = _sp_color(age)
+                        counts[cp] = counts.get(cp, 0) + 1
                 elif fallingsand:
                     if age:
                         cp = _fs_color(age)
@@ -4641,6 +4834,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         wator = _is_wator(rule)
         fallingsand = _is_fallingsand(rule)
         physarum = _is_physarum(rule)
+        sandpile = _is_sandpile(rule)
 
         # Track population
         pop = _count_population(grid)
@@ -4709,7 +4903,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     ch = braille_lines[tr][tc]
                     if ch == chr(_BRAILLE_BASE):
                         continue  # empty — skip for speed
-                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia or physarum, turmite=turmite, wator=wator, fallingsand=fallingsand)
+                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia or physarum, turmite=turmite, wator=wator, fallingsand=fallingsand, sandpile=sandpile)
                     try:
                         stdscr.addstr(tr, tc, ch, curses.color_pair(cp))
                     except curses.error:
@@ -4740,6 +4934,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                         attr = curses.color_pair(8)
                     elif detected_cells and (r, c) in detected_cells:
                         attr = curses.color_pair(12)
+                    elif sandpile:
+                        attr = curses.color_pair(_sp_color(age))
+                        cell_str = "\u2588\u2588" if age else "  "
                     elif fallingsand:
                         attr = curses.color_pair(_fs_color(age))
                         cell_str = "\u2588\u2588" if age else "  "
@@ -5220,6 +5417,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_wator = wator
                 was_fs = fallingsand
                 was_phys = physarum
+                was_sp = sandpile
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -5234,10 +5432,11 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_wator = _is_wator(rule)
                 new_fs = _is_fallingsand(rule)
                 new_phys = _is_physarum(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys:
+                new_sp = _is_sandpile(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp:
                     hashlife_active = False
                 # Mode transition: clear grid and re-initialize
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -5265,6 +5464,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_phys:
                         _phys_init(rows, cols)
                         grid = _phys_to_grid(rows, cols)
+                    elif new_sp:
+                        _sp_init(rows, cols)
+                        grid = _sp_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -5387,6 +5589,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_wator = wator
                 was_fs = fallingsand
                 was_phys = physarum
+                was_sp = sandpile
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -5401,9 +5604,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_wator = _is_wator(rule)
                 new_fs = _is_fallingsand(rule)
                 new_phys = _is_physarum(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys:
+                new_sp = _is_sandpile(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp:
                     hashlife_active = False
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -5431,6 +5635,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_phys:
                         _phys_init(rows, cols)
                         grid = _phys_to_grid(rows, cols)
+                    elif new_sp:
+                        _sp_init(rows, cols)
+                        grid = _sp_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -5730,6 +5937,30 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 rule["name"] = f"Physarum ({PHYSARUM_PRESETS[preset_name]['name']})"
                 _phys_init(rows, cols, preset_name)
                 grid = _phys_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord("<") and sandpile:
+                # Previous Sandpile preset
+                _sp_preset_idx = (_sp_preset_idx - 1) % len(SANDPILE_PRESET_NAMES)
+                preset_name = SANDPILE_PRESET_NAMES[_sp_preset_idx]
+                rule["name"] = f"Sandpile ({SANDPILE_PRESETS[preset_name]['name']})"
+                _sp_init(rows, cols, preset_name)
+                grid = _sp_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord(">") and sandpile:
+                # Next Sandpile preset
+                _sp_preset_idx = (_sp_preset_idx + 1) % len(SANDPILE_PRESET_NAMES)
+                preset_name = SANDPILE_PRESET_NAMES[_sp_preset_idx]
+                rule["name"] = f"Sandpile ({SANDPILE_PRESETS[preset_name]['name']})"
+                _sp_init(rows, cols, preset_name)
+                grid = _sp_to_grid(rows, cols)
                 generation = 0
                 history = [copy.deepcopy(grid)]
                 hist_idx = 0
@@ -6562,6 +6793,13 @@ def main():
              "Options: " + ", ".join(PHYSARUM_PRESETS.keys()),
     )
     parser.add_argument(
+        "--sandpile-preset",
+        choices=list(SANDPILE_PRESETS.keys()),
+        default="single-source",
+        help="Sandpile preset when --rule sandpile (default: single-source). "
+             "Options: " + ", ".join(SANDPILE_PRESETS.keys()),
+    )
+    parser.add_argument(
         "--discover",
         action="store_true",
         default=False,
@@ -6630,7 +6868,7 @@ def main():
     )
     args = parser.parse_args()
 
-    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx, _fs_preset_idx
+    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx, _fs_preset_idx, _sp_preset_idx
 
     # Headless batch-render mode: output PNG frames without terminal UI
     if args.render is not None:
@@ -6798,6 +7036,15 @@ def main():
             rule["name"] = f"Physarum ({preset['name']})"
         _phys_init(args.rows, args.cols, phys_preset_name)
         grid = _phys_to_grid(args.rows, args.cols)
+    elif args.rule.lower() == "sandpile":
+        # Abelian Sandpile self-organized criticality
+        sp_preset_name = args.sandpile_preset
+        if sp_preset_name in SANDPILE_PRESETS:
+            _sp_preset_idx = SANDPILE_PRESET_NAMES.index(sp_preset_name)
+            preset = SANDPILE_PRESETS[sp_preset_name]
+            rule["name"] = f"Sandpile ({preset['name']})"
+        _sp_init(args.rows, args.cols, sp_preset_name)
+        grid = _sp_to_grid(args.rows, args.cols)
     else:
         place_pattern(grid, args.pattern)
 

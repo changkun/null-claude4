@@ -1,6 +1,6 @@
 # Cellular Automaton — Terminal Simulator
 
-A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, and supports arbitrary rules via B/S notation.
+A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, and supports arbitrary rules via B/S notation.
 
 ## Usage
 
@@ -33,6 +33,8 @@ python3 life.py --rule fallingsand                     # Falling Sand particle s
 python3 life.py --rule fallingsand --fallingsand-preset volcano # volcanic eruption scene
 python3 life.py --rule physarum                        # Physarum slime mold (dendritic)
 python3 life.py --rule physarum --physarum-preset network # efficient transport paths
+python3 life.py --rule sandpile                          # Abelian Sandpile (single-source)
+python3 life.py --rule sandpile --sandpile-preset random-rain # uniform random grain drops
 python3 life.py --script probabilistic_life        # run a user script on startup
 python3 life.py --script ~/my_script.py            # run a script from a file path
 python3 life.py --discover                         # evolve interesting rulesets via GA
@@ -50,7 +52,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--speed`   | 0.1       | Delay between generations (seconds)  |
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
 | `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
-| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, or B/S notation (e.g. `B36/S23`) |
+| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, `sandpile`, or B/S notation (e.g. `B36/S23`) |
 | `--gs-preset` | `mitosis` | Gray-Scott parameter preset (`mitosis`, `coral`, `solitons`, `maze`, `spots`, `worms`, `waves`, `bubbles`) |
 | `--lenia-preset` | `orbium` | Lenia species preset (`orbium`, `geminium`, `scutium`, `hydrogeminium`, `wanderer`, `smooth_life`) |
 | `--eca-rule` | 30        | Wolfram rule number (0–255) for Elementary CA mode |
@@ -58,6 +60,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--wator-preset` | `classic` | Wa-Tor ecosystem preset (`classic`, `fast_breed`, `sparse`, `sharks_rule`, `volatile`, `equilibrium`) |
 | `--fallingsand-preset` | `hourglass` | Falling Sand preset (`hourglass`, `rain`, `volcano`, `garden`, `sandbox`, `cascade`) |
 | `--physarum-preset` | `dendritic` | Physarum slime mold preset (`dendritic`, `fungal`, `network`, `rings`, `tendrils`, `lattice`) |
+| `--sandpile-preset` | `single-source` | Abelian Sandpile preset (`single-source`, `random-rain`, `identity`, `max-stable`) |
 | `--script`  | —         | Run a Python script on startup (path or name from `~/.life-scripts/`) |
 | `--discover` | off      | Launch genetic algorithm rule discovery mode |
 | `--ga-generations` | 50 | Number of GA generations in discovery mode |
@@ -86,7 +89,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `B`       | Toggle Braille high-density rendering |
 | `T`       | Cycle topology (Torus → Klein Bottle → Möbius Strip → Bounded) |
 | `H`       | Toggle HashLife hyperspeed mode   |
-| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode; cycle Physarum presets in Physarum mode |
+| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode; cycle Physarum presets in Physarum mode; cycle Sandpile presets in Sandpile mode |
 | `W`       | Enter a specific Wolfram rule number (0–255) in Elementary CA mode |
 | `G`       | Export history as animated GIF    |
 | `L`       | Load and run a script             |
@@ -173,6 +176,7 @@ All rules use Birth/Survival notation — a cell is born if it has exactly B nei
 | `wator`    | *(ecosystem)* | Predator-prey dynamics — see [Wa-Tor](#wa-tor-predator-prey-ecosystem) below |
 | `fallingsand` | *(particle physics)* | Gravity-driven sandbox — see [Falling Sand](#falling-sand-particle-simulation) below |
 | `physarum`   | *(chemotaxis)* | Slime mold transport networks — see [Physarum](#physarum-slime-mold-transport-network) below |
+| `sandpile`   | *(self-organized criticality)* | Abelian Sandpile — see [Sandpile](#abelian-sandpile) below |
 
 Use `--rule <preset>` or `--rule B.../S...` for custom rules. Press `R` at runtime to cycle through presets.
 
@@ -551,6 +555,50 @@ Press `<` / `>` at runtime to cycle through presets. Each configures sensor angl
 
 - **HashLife** — incompatible (agent-based simulation). Switching to Physarum mode auto-deactivates HashLife.
 - **Randomize** (`r`) — re-initializes agents and trail map with the current preset.
+- **Status bar** — shows the current preset name.
+
+## Abelian Sandpile
+
+The Bak–Tang–Wiesenfeld sandpile model: the canonical example of **self-organized criticality**. Cells hold grain counts 0–3. When a cell reaches 4 grains it "topples", sending one grain to each of its four von Neumann neighbours. This trivially simple rule produces fractal diamond patterns and power-law avalanche distributions.
+
+### Starting Sandpile
+
+```bash
+python3 life.py --rule sandpile                                  # default single-source preset
+python3 life.py --rule sandpile --sandpile-preset random-rain    # uniform random grain drops
+python3 life.py --rule sandpile --sandpile-preset identity       # identity element of sandpile group
+python3 life.py --rule sandpile --sandpile-preset max-stable     # all 3s — one grain triggers massive avalanche
+```
+
+### Presets
+
+| Preset | Description |
+|--------|-------------|
+| `single-source` | Drop grains at center — watch fractal diamonds emerge |
+| `random-rain` | Uniform random grain drops across the grid |
+| `identity` | The identity element of the sandpile group (all 6s toppled to stability) |
+| `max-stable` | Every cell at 3 — one grain triggers a massive cascading avalanche |
+
+Press `<`/`>` at runtime to cycle through presets.
+
+### Colors
+
+| Height | Color |
+|--------|-------|
+| 0 | Background (empty) |
+| 1 | Cyan |
+| 2 | Green |
+| 3 | Yellow |
+
+### Rendering
+
+- **Terminal** — heights are rendered as filled blocks with height-mapped colors.
+- **Braille** — supported; color chosen by majority vote of the 2×4 block.
+
+### Interactions
+
+- **HashLife** — incompatible (grid-free simulation). Switching to Sandpile mode auto-deactivates HashLife.
+- **Randomize** (`r`) — re-initializes the sandpile with the current preset.
 - **Status bar** — shows the current preset name.
 
 ## Population Statistics Dashboard
