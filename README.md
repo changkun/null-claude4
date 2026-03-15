@@ -18,6 +18,9 @@ python3 life.py --rule B2/S                        # custom rule via B/S notatio
 python3 life.py --rule wireworld                   # Wireworld 4-state automaton
 python3 life.py --rule grayscott                   # Gray-Scott reaction-diffusion
 python3 life.py --rule grayscott --gs-preset coral  # Gray-Scott with coral preset
+python3 life.py --rule elementary                   # 1D Elementary CA (Rule 30)
+python3 life.py --rule elementary --eca-rule 110    # Turing-complete Rule 110
+python3 life.py --rule elementary --eca-rule 90     # Sierpinski triangles
 python3 life.py --script probabilistic_life        # run a user script on startup
 python3 life.py --script ~/my_script.py            # run a script from a file path
 python3 life.py --discover                         # evolve interesting rulesets via GA
@@ -35,8 +38,9 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--speed`   | 0.1       | Delay between generations (seconds)  |
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
 | `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
-| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, or B/S notation (e.g. `B36/S23`) |
+| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `elementary`, or B/S notation (e.g. `B36/S23`) |
 | `--gs-preset` | `mitosis` | Gray-Scott parameter preset (`mitosis`, `coral`, `solitons`, `maze`, `spots`, `worms`, `waves`, `bubbles`) |
+| `--eca-rule` | 30        | Wolfram rule number (0–255) for Elementary CA mode |
 | `--script`  | —         | Run a Python script on startup (path or name from `~/.life-scripts/`) |
 | `--discover` | off      | Launch genetic algorithm rule discovery mode |
 | `--ga-generations` | 50 | Number of GA generations in discovery mode |
@@ -65,7 +69,8 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `B`       | Toggle Braille high-density rendering |
 | `T`       | Cycle topology (Torus → Klein Bottle → Möbius Strip → Bounded) |
 | `H`       | Toggle HashLife hyperspeed mode   |
-| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode |
+| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle notable ECA rules in Elementary mode |
+| `W`       | Enter a specific Wolfram rule number (0–255) in Elementary CA mode |
 | `G`       | Export history as animated GIF    |
 | `L`       | Load and run a script             |
 | `[`       | Rewind one generation (auto-pauses) |
@@ -145,6 +150,7 @@ All rules use Birth/Survival notation — a cell is born if it has exactly B nei
 | `maze`     | B3/S12345  | Generates maze-like corridors |
 | `wireworld`| *(4-state)* | Logic circuits — see [Wireworld](#wireworld) below |
 | `grayscott`| *(continuous)* | Reaction-diffusion — see [Gray-Scott](#gray-scott-reaction-diffusion) below |
+| `elementary`| *(1D Wolfram)* | 256 elementary CA rules — see [Elementary CA](#elementary-cellular-automata) below |
 
 Use `--rule <preset>` or `--rule B.../S...` for custom rules. Press `R` at runtime to cycle through presets.
 
@@ -240,6 +246,50 @@ Press `<` / `>` at runtime to cycle through presets. Each produces qualitatively
 - **HashLife** — incompatible (continuous values cannot use the quadtree memoization). Pressing `H` in Gray-Scott mode is blocked; switching to Gray-Scott via `R` auto-deactivates HashLife.
 - **Randomize** (`r`) — re-seeds the U/V concentration grids with new random patches instead of binary randomization.
 - **Status bar** — displays current `F=` and `k=` values with a `[<>]preset` hint.
+
+## Elementary Cellular Automata
+
+Elementary Cellular Automata (ECA) are the simplest class of one-dimensional cellular automata, studied extensively by Stephen Wolfram. Each of the 256 rules maps a 3-cell neighborhood (left, center, right) to a single output bit. The simulator renders them as scrolling space-time diagrams — each new generation appears as a row at the bottom, with history scrolling upward.
+
+### Starting Elementary CA
+
+```bash
+python3 life.py --rule elementary                   # default Rule 30
+python3 life.py --rule elementary --eca-rule 110    # Turing-complete Rule 110
+python3 life.py --rule elementary --eca-rule 90     # Sierpinski triangle fractal
+```
+
+### Notable Rules
+
+The simulator includes 16 notable rules for quick cycling with `<`/`>`:
+
+| Rule | Character |
+|------|-----------|
+| **30** | Chaotic — used as a PRNG in Mathematica |
+| **110** | Turing-complete — capable of universal computation |
+| **90** | Produces Sierpinski triangle fractals |
+| **184** | Traffic flow modeling |
+| **150** | Additive rule with complex behavior |
+| **73, 45, 105, 54, 60, 62, 126, 182, 225, 137, 169** | Various complex and class III/IV behaviors |
+
+### Controls (Elementary CA mode)
+
+| Key | Action |
+|-----|--------|
+| `<` / `>` | Cycle through notable rules (resets simulation) |
+| `W` | Enter a specific rule number (0–255) via text prompt |
+| `r` | Randomize initial conditions (random row instead of single center cell) |
+
+### Initialization
+
+By default, the 1D row starts with a single live cell in the center — the canonical initial condition that reveals each rule's intrinsic structure. Press `r` to switch to a random initial row, which produces different behavior for many rules (especially Class II rules that appear boring from a single cell).
+
+### Interactions
+
+- **HashLife** — incompatible (1D automaton). Switching to Elementary CA via `R` auto-deactivates HashLife.
+- **Boundary conditions** — the 1D row wraps circularly (toroidal).
+- **Status bar** — shows `Rule N [<>]cycle [W]rule#` with the current Wolfram rule number.
+- **History** — the space-time diagram is capped at 10,000 rows to prevent unbounded memory growth.
 
 ## Population Statistics Dashboard
 

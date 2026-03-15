@@ -38,6 +38,7 @@ RULES = {
     "maze":      {"b": {3}, "s": {1, 2, 3, 4, 5}, "name": "Maze (B3/S12345)"},
     "wireworld": {"b": set(), "s": set(), "name": "Wireworld", "wireworld": True},
     "grayscott": {"b": set(), "s": set(), "name": "Gray-Scott (Mitosis)", "grayscott": True},
+    "elementary": {"b": set(), "s": set(), "name": "Elementary CA (Rule 30)", "elementary": True},
 }
 
 RULE_NAMES = list(RULES.keys())
@@ -118,6 +119,80 @@ def _is_wireworld(rule):
 def _is_grayscott(rule):
     """Check if the current rule is the Gray-Scott reaction-diffusion model."""
     return rule.get("grayscott", False)
+
+
+def _is_elementary(rule):
+    """Check if the current rule is a 1D Elementary Cellular Automaton."""
+    return rule.get("elementary", False)
+
+
+# --- 1D Elementary Cellular Automata (Wolfram Rules) ---
+# Each of the 256 rules maps a 3-cell neighborhood (left, center, right) to 0 or 1.
+# The space-time diagram scrolls upward: new generations appear at the bottom.
+
+# Notable rules for quick cycling
+ECA_NOTABLE_RULES = [30, 110, 90, 184, 150, 73, 45, 105, 54, 60, 62, 126, 182, 225, 137, 169]
+
+_eca_rule_num = 30          # current Wolfram rule number (0-255)
+_eca_state = None           # current 1D row (list of 0/1, length = cols)
+_eca_history = []           # list of past rows for the space-time diagram
+_eca_notable_idx = 0        # index into ECA_NOTABLE_RULES for cycling
+
+
+def _eca_lookup_table(rule_num):
+    """Build a lookup table for the 8 possible 3-cell neighborhoods."""
+    return [(rule_num >> i) & 1 for i in range(8)]
+
+
+def _eca_init(cols, init_type="center"):
+    """Initialize the 1D ECA state and clear history."""
+    global _eca_state, _eca_history
+    _eca_state = [0] * cols
+    if init_type == "center":
+        _eca_state[cols // 2] = 1
+    elif init_type == "random":
+        import random
+        _eca_state = [random.randint(0, 1) for _ in range(cols)]
+    _eca_history = [list(_eca_state)]
+
+
+def _eca_step():
+    """Advance the ECA by one generation using the current rule."""
+    global _eca_state, _eca_history
+    table = _eca_lookup_table(_eca_rule_num)
+    n = len(_eca_state)
+    new_state = [0] * n
+    for i in range(n):
+        left = _eca_state[(i - 1) % n]
+        center = _eca_state[i]
+        right = _eca_state[(i + 1) % n]
+        idx = (left << 2) | (center << 1) | right
+        new_state[i] = table[idx]
+    _eca_state = new_state
+    _eca_history.append(list(_eca_state))
+    # Cap internal history to prevent unbounded memory growth;
+    # the main loop's history[] handles time-travel independently.
+    if len(_eca_history) > 10000:
+        _eca_history = _eca_history[-10000:]
+
+
+def _eca_to_grid(rows, cols):
+    """Convert ECA history into a 2D grid (space-time diagram).
+
+    Most recent generation at the bottom, history scrolling upward.
+    Each cell is 0 (dead) or 1 (alive) — age is not tracked.
+    """
+    grid = [[0] * cols for _ in range(rows)]
+    history_len = len(_eca_history)
+    # Fill grid from bottom to top with most recent history
+    for r in range(rows):
+        hist_row_idx = history_len - (rows - r)
+        if hist_row_idx >= 0:
+            src = _eca_history[hist_row_idx]
+            src_len = len(src)
+            for c in range(min(cols, src_len)):
+                grid[r][c] = src[c]
+    return grid
 
 
 # --- Gray-Scott Reaction-Diffusion ---
@@ -1094,6 +1169,10 @@ def place_pattern(grid, name, row_off=None, col_off=None):
 def step(grid, rule=None):
     if rule is None:
         rule = RULES["life"]
+    if _is_elementary(rule):
+        rows, cols = len(grid), len(grid[0])
+        _eca_step()
+        return _eca_to_grid(rows, cols)
     if _is_grayscott(rule):
         rows, cols = len(grid), len(grid[0])
         if _HAS_NUMPY:
@@ -3011,7 +3090,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
     sound = SoundEngine()
 
     # Topology mode
-    global _topology, _gs_preset_idx, _gs_feed, _gs_kill
+    global _topology, _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx
     topo_idx = 0  # index into TOPOLOGIES
     _topology = TOPOLOGIES[topo_idx]
 
@@ -3029,6 +3108,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
     while True:
         ww = _is_wireworld(rule)
         gs = _is_grayscott(rule)
+        eca = _is_elementary(rule)
 
         # Track population
         pop = _count_population(grid)
@@ -3206,7 +3286,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
             else:
                 hashlife_str = ""
             gs_str = f" | F={_gs_feed:.4f} k={_gs_kill:.4f} [<>]preset" if gs else ""
-            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{topo_str}{hashlife_str}{gs_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [T]opo [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
+            eca_str = f" | Rule {_eca_rule_num} [<>]cycle [W]rule#" if eca else ""
+            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{topo_str}{hashlife_str}{gs_str}{eca_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [T]opo [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
@@ -3586,6 +3667,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
             elif key == ord("R"):
                 was_ww = ww
                 was_gs = gs
+                was_eca = eca
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -3594,12 +3676,11 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     rule = RULES[RULE_NAMES[0]]
                 new_ww = _is_wireworld(rule)
                 new_gs = _is_grayscott(rule)
-                if new_ww:
-                    hashlife_active = False
-                if new_gs:
+                new_eca = _is_elementary(rule)
+                if new_ww or new_gs or new_eca:
                     hashlife_active = False
                 # Mode transition: clear grid and re-initialize
-                if was_ww != new_ww or was_gs != new_gs:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -3608,6 +3689,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_gs:
                         _gs_init(rows, cols)
                         grid = _gs_to_grid(rows, cols)
+                    elif new_eca:
+                        _eca_init(cols)
+                        grid = _eca_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -3699,6 +3783,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 if gs:
                     _gs_init(rows, cols)
                     grid = _gs_to_grid(rows, cols)
+                elif eca:
+                    _eca_init(cols, init_type="random")
+                    grid = _eca_to_grid(rows, cols)
                 else:
                     import random
                     for r2 in range(rows):
@@ -3715,6 +3802,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
             elif key == ord("R"):
                 was_ww = ww
                 was_gs = gs
+                was_eca = eca
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -3723,11 +3811,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     rule = RULES[RULE_NAMES[0]]
                 new_ww = _is_wireworld(rule)
                 new_gs = _is_grayscott(rule)
-                if new_ww:
+                new_eca = _is_elementary(rule)
+                if new_ww or new_gs or new_eca:
                     hashlife_active = False
-                if new_gs:
-                    hashlife_active = False
-                if was_ww != new_ww or was_gs != new_gs:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -3736,6 +3823,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_gs:
                         _gs_init(rows, cols)
                         grid = _gs_to_grid(rows, cols)
+                    elif new_eca:
+                        _eca_init(cols)
+                        grid = _eca_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -3894,6 +3984,53 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 hist_idx = 0
                 browsing_history = False
                 pop_history = []
+            elif key == ord("<") and eca:
+                # Previous notable ECA rule
+                _eca_notable_idx = (_eca_notable_idx - 1) % len(ECA_NOTABLE_RULES)
+                _eca_rule_num = ECA_NOTABLE_RULES[_eca_notable_idx]
+                rule["name"] = f"Elementary CA (Rule {_eca_rule_num})"
+                _eca_init(cols)
+                grid = _eca_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord(">") and eca:
+                # Next notable ECA rule
+                _eca_notable_idx = (_eca_notable_idx + 1) % len(ECA_NOTABLE_RULES)
+                _eca_rule_num = ECA_NOTABLE_RULES[_eca_notable_idx]
+                rule["name"] = f"Elementary CA (Rule {_eca_rule_num})"
+                _eca_init(cols)
+                grid = _eca_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord("W") and eca:
+                # Enter a specific ECA rule number (0-255)
+                paused = True
+                max_y2, max_x2 = stdscr.getmaxyx()
+                num_str = curses_input(stdscr, f"Enter rule number (0-255) [{_eca_rule_num}]: ", max_y2, max_x2)
+                if num_str.strip():
+                    try:
+                        num = int(num_str.strip())
+                        if 0 <= num <= 255:
+                            _eca_rule_num = num
+                            rule["name"] = f"Elementary CA (Rule {_eca_rule_num})"
+                            # Update notable index if it matches
+                            if _eca_rule_num in ECA_NOTABLE_RULES:
+                                _eca_notable_idx = ECA_NOTABLE_RULES.index(_eca_rule_num)
+                            _eca_init(cols)
+                            grid = _eca_to_grid(rows, cols)
+                            generation = 0
+                            history = [copy.deepcopy(grid)]
+                            hist_idx = 0
+                            browsing_history = False
+                            pop_history = []
+                    except ValueError:
+                        pass
             elif key == ord("G"):
                 # Export history as animated GIF
                 if len(history) > 1:
@@ -4655,6 +4792,14 @@ def main():
              "Options: " + ", ".join(GS_PRESETS.keys()),
     )
     parser.add_argument(
+        "--eca-rule",
+        type=int,
+        default=30,
+        metavar="N",
+        help="Wolfram rule number (0-255) when --rule elementary (default: 30). "
+             "Notable: 30 (PRNG), 110 (Turing-complete), 90 (Sierpinski)",
+    )
+    parser.add_argument(
         "--discover",
         action="store_true",
         default=False,
@@ -4722,6 +4867,8 @@ def main():
         help="Output directory for rendered PNG frames (default: frames)",
     )
     args = parser.parse_args()
+
+    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx
 
     # Headless batch-render mode: output PNG frames without terminal UI
     if args.render is not None:
@@ -4832,6 +4979,17 @@ def main():
             rule["name"] = f"Gray-Scott ({preset['name']})"
         _gs_init(args.rows, args.cols)
         grid = _gs_to_grid(args.rows, args.cols)
+    elif args.rule.lower() == "elementary":
+        # 1D Elementary CA: initialize with Wolfram rule number
+        eca_num = args.eca_rule
+        if not (0 <= eca_num <= 255):
+            parser.error("--eca-rule must be between 0 and 255")
+        _eca_rule_num = eca_num
+        if _eca_rule_num in ECA_NOTABLE_RULES:
+            _eca_notable_idx = ECA_NOTABLE_RULES.index(_eca_rule_num)
+        rule["name"] = f"Elementary CA (Rule {_eca_rule_num})"
+        _eca_init(args.cols)
+        grid = _eca_to_grid(args.rows, args.cols)
     else:
         place_pattern(grid, args.pattern)
 
