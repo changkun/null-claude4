@@ -35,9 +35,21 @@ RULES = {
     "morley":    {"b": {3, 6, 8}, "s": {2, 4, 5}, "name": "Morley (B368/S245)"},
     "2x2":       {"b": {3, 6}, "s": {1, 2, 5}, "name": "2x2 (B36/S125)"},
     "maze":      {"b": {3}, "s": {1, 2, 3, 4, 5}, "name": "Maze (B3/S12345)"},
+    "wireworld": {"b": set(), "s": set(), "name": "Wireworld", "wireworld": True},
 }
 
 RULE_NAMES = list(RULES.keys())
+
+# --- Wireworld Cell States ---
+WW_EMPTY = 0       # empty / background
+WW_HEAD = 1         # electron head
+WW_TAIL = 2         # electron tail
+WW_CONDUCTOR = 3    # conductor (wire)
+
+
+def _is_wireworld(rule):
+    """Check if the current rule is the Wireworld automaton."""
+    return rule.get("wireworld", False)
 
 
 def parse_rule_string(rule_str):
@@ -96,6 +108,69 @@ PATTERNS = {
         (3, 35), (4, 35), (3, 36), (4, 36),
     ],
     "random": [],  # handled specially
+}
+
+# --- Wireworld Built-in Patterns ---
+# Stored as list of (row, col, state) tuples
+WIREWORLD_PATTERNS = {
+    "ww_diode": [
+        # A diode — signal flows left-to-right only
+        #   ..HTC..
+        #   .C...C.
+        #   ..CCC..
+        (0, 2, WW_HEAD), (0, 3, WW_TAIL), (0, 4, WW_CONDUCTOR),
+        (1, 1, WW_CONDUCTOR), (1, 5, WW_CONDUCTOR),
+        (2, 2, WW_CONDUCTOR), (2, 3, WW_CONDUCTOR), (2, 4, WW_CONDUCTOR),
+        # Input wire
+        (0, 0, WW_CONDUCTOR), (0, 1, WW_CONDUCTOR),
+        # Output wire
+        (0, 5, WW_CONDUCTOR), (0, 6, WW_CONDUCTOR), (0, 7, WW_CONDUCTOR),
+    ],
+    "ww_clock": [
+        # A simple clock — a 6-cell loop generating periodic signals
+        # .CCC.
+        # C...C
+        # .CHT.
+        # Output wire extends right from top
+        (0, 1, WW_CONDUCTOR), (0, 2, WW_CONDUCTOR), (0, 3, WW_CONDUCTOR),
+        (1, 0, WW_CONDUCTOR), (1, 4, WW_CONDUCTOR),
+        (2, 1, WW_CONDUCTOR), (2, 2, WW_HEAD), (2, 3, WW_TAIL),
+        # Output wire from top-right corner
+        (0, 4, WW_CONDUCTOR), (0, 5, WW_CONDUCTOR), (0, 6, WW_CONDUCTOR),
+        (0, 7, WW_CONDUCTOR),
+    ],
+    "ww_or_gate": [
+        # OR gate — output fires if either input has a signal
+        # Two input wires converge to a single output wire
+        # Input A (top)
+        (0, 0, WW_CONDUCTOR), (0, 1, WW_CONDUCTOR), (0, 2, WW_CONDUCTOR),
+        (0, 3, WW_CONDUCTOR),
+        # Input B (bottom)
+        (4, 0, WW_CONDUCTOR), (4, 1, WW_CONDUCTOR), (4, 2, WW_CONDUCTOR),
+        (4, 3, WW_CONDUCTOR),
+        # Junction
+        (1, 3, WW_CONDUCTOR), (2, 3, WW_CONDUCTOR), (3, 3, WW_CONDUCTOR),
+        # Output wire
+        (2, 4, WW_CONDUCTOR), (2, 5, WW_CONDUCTOR), (2, 6, WW_CONDUCTOR),
+        (2, 7, WW_CONDUCTOR),
+        # Signal on input A
+        (0, 0, WW_HEAD), (0, 1, WW_TAIL),
+    ],
+    "ww_and_gate": [
+        # AND gate — output fires only if both inputs have signals
+        # Based on the classic Wireworld AND gate design
+        # Input A (top)
+        (0, 0, WW_CONDUCTOR), (0, 1, WW_CONDUCTOR), (0, 2, WW_CONDUCTOR),
+        (1, 2, WW_CONDUCTOR),
+        # Input B (bottom)
+        (4, 0, WW_CONDUCTOR), (4, 1, WW_CONDUCTOR), (4, 2, WW_CONDUCTOR),
+        (3, 2, WW_CONDUCTOR),
+        # Central column (the AND logic)
+        (2, 2, WW_CONDUCTOR),
+        # Output wire
+        (2, 3, WW_CONDUCTOR), (2, 4, WW_CONDUCTOR), (2, 5, WW_CONDUCTOR),
+        (2, 6, WW_CONDUCTOR),
+    ],
 }
 
 
@@ -432,11 +507,12 @@ def list_scripts():
     return files
 
 
-def save_cells(grid, filepath):
+def save_cells(grid, filepath, rule=None):
     """Save grid to a .cells plaintext file."""
     os.makedirs(os.path.dirname(filepath) if os.path.dirname(filepath) else ".", exist_ok=True)
     rows, cols = len(grid), len(grid[0])
-    # Find bounding box of live cells to trim empty borders
+    ww = rule is not None and _is_wireworld(rule)
+    # Find bounding box of non-empty cells to trim empty borders
     min_r = min_c = float("inf")
     max_r = max_c = float("-inf")
     for r in range(rows):
@@ -448,6 +524,8 @@ def save_cells(grid, filepath):
                 max_c = max(max_c, c)
     with open(filepath, "w") as f:
         f.write(f"!Name: {os.path.splitext(os.path.basename(filepath))[0]}\n")
+        if ww:
+            f.write("!Rule: Wireworld\n")
         if min_r == float("inf"):
             # Empty grid
             f.write(".\n")
@@ -455,27 +533,35 @@ def save_cells(grid, filepath):
         for r in range(min_r, max_r + 1):
             line = ""
             for c in range(min_c, max_c + 1):
-                line += "O" if grid[r][c] else "."
+                if ww:
+                    # Wireworld: .=empty, H=head, T=tail, C=conductor
+                    v = grid[r][c]
+                    line += {WW_EMPTY: ".", WW_HEAD: "H", WW_TAIL: "T", WW_CONDUCTOR: "C"}.get(v, ".")
+                else:
+                    line += "O" if grid[r][c] else "."
             f.write(line.rstrip(".") + "\n")
 
 
 def load_cells(filepath, rows, cols):
     """Load a .cells plaintext file into a new grid, centred."""
     pattern_rows = []
+    is_wireworld = False
     with open(filepath, "r") as f:
         for line in f:
             line = line.rstrip("\n\r")
             if line.startswith("!"):
+                if "wireworld" in line.lower():
+                    is_wireworld = True
                 continue
             row = []
             for ch in line:
-                if ch == "O":
-                    row.append(1)
+                if is_wireworld:
+                    row.append({"H": WW_HEAD, "T": WW_TAIL, "C": WW_CONDUCTOR}.get(ch, WW_EMPTY))
                 else:
-                    row.append(0)
+                    row.append(1 if ch == "O" else 0)
             pattern_rows.append(row)
     if not pattern_rows:
-        return make_grid(rows, cols)
+        return make_grid(rows, cols), is_wireworld
     p_rows = len(pattern_rows)
     p_cols = max(len(r) for r in pattern_rows)
     grid = make_grid(rows, cols)
@@ -486,7 +572,7 @@ def load_cells(filepath, rows, cols):
             nr, nc = r + off_r, c + off_c
             if 0 <= nr < rows and 0 <= nc < cols:
                 grid[nr][nc] = val
-    return grid
+    return grid, is_wireworld
 
 
 def parse_rle(text):
@@ -530,6 +616,9 @@ def parse_rle(text):
     # Remove anything after '!'
     pattern_data = pattern_data.split("!")[0]
 
+    # Detect if this is a Wireworld or multi-state rule
+    is_wireworld = "wireworld" in rule_str.lower() if rule_str else False
+
     # Decode the run-length data
     rows_2d = []
     current_row = []
@@ -546,10 +635,14 @@ def parse_rle(text):
             break
         ch = pattern_data[i]
         i += 1
-        if ch == "b":
+        if ch == "b" or ch == ".":
             current_row.extend([0] * run_count)
-        elif ch == "o":
+        elif ch == "o" or ch == "A":
             current_row.extend([1] * run_count)
+        elif ch == "B":
+            current_row.extend([2] * run_count)
+        elif ch == "C":
+            current_row.extend([3] * run_count)
         elif ch == "$":
             rows_2d.append(current_row)
             # '$' can have a run count meaning multiple row-ends
@@ -571,11 +664,17 @@ def parse_rle(text):
 
 
 def encode_rle(stamp, name="", rule_str="B3/S23"):
-    """Encode a 2D list of 0/1 into RLE format text."""
+    """Encode a 2D list of cell values into RLE format text.
+
+    Supports multi-state: 0=b, 1=o, 2=B, 3=C (for Wireworld etc.)
+    """
     if not stamp or not stamp[0]:
         return ""
     height = len(stamp)
     width = max(len(r) for r in stamp)
+
+    # Detect if multi-state (values > 1 present)
+    _state_chars = {0: "b", 1: "o", 2: "B", 3: "C"}
 
     lines = []
     if name:
@@ -598,7 +697,7 @@ def encode_rle(stamp, name="", rule_str="B3/S23"):
             count = 1
             while i + count < len(padded) and padded[i + count] == val:
                 count += 1
-            ch = "o" if val else "b"
+            ch = _state_chars.get(val, "o")
             if count > 1:
                 data += f"{count}{ch}"
             else:
@@ -623,9 +722,10 @@ def load_rle(filepath, rows, cols):
     """Load an RLE file into a new grid, centred."""
     with open(filepath, "r") as f:
         text = f.read()
-    pattern_rows, _name, _rule = parse_rle(text)
+    pattern_rows, _name, rule_str = parse_rle(text)
+    is_wireworld = "wireworld" in rule_str.lower() if rule_str else False
     if not pattern_rows:
-        return make_grid(rows, cols)
+        return make_grid(rows, cols), is_wireworld
     p_rows = len(pattern_rows)
     p_cols = max(len(r) for r in pattern_rows)
     grid = make_grid(rows, cols)
@@ -636,14 +736,15 @@ def load_rle(filepath, rows, cols):
             nr, nc = r + off_r, c + off_c
             if 0 <= nr < rows and 0 <= nc < cols:
                 grid[nr][nc] = val
-    return grid
+    return grid, is_wireworld
 
 
 def save_rle(grid, filepath, rule=None):
     """Save grid to an RLE file."""
     os.makedirs(os.path.dirname(filepath) if os.path.dirname(filepath) else ".", exist_ok=True)
     rows, cols = len(grid), len(grid[0])
-    # Find bounding box of live cells
+    ww = rule is not None and _is_wireworld(rule)
+    # Find bounding box of non-empty cells
     min_r = min_c = float("inf")
     max_r = max_c = float("-inf")
     for r in range(rows):
@@ -664,19 +765,28 @@ def save_rle(grid, filepath, rule=None):
     for r in range(min_r, max_r + 1):
         row = []
         for c in range(min_c, max_c + 1):
-            row.append(1 if grid[r][c] else 0)
+            if ww:
+                row.append(grid[r][c])  # preserve state value
+            else:
+                row.append(1 if grid[r][c] else 0)
         stamp.append(row)
-    rule_str = "B3/S23"
-    if rule:
+    if ww:
+        rule_str = "Wireworld"
+    elif rule:
         b = "".join(str(d) for d in sorted(rule["b"]))
         s = "".join(str(d) for d in sorted(rule["s"]))
         rule_str = f"B{b}/S{s}"
+    else:
+        rule_str = "B3/S23"
     with open(filepath, "w") as f:
         f.write(encode_rle(stamp, name=name, rule_str=rule_str))
 
 
 def _load_pattern_file(filepath, rows, cols):
-    """Load a pattern file (.cells or .rle) based on extension."""
+    """Load a pattern file (.cells or .rle) based on extension.
+
+    Returns (grid, is_wireworld).
+    """
     if filepath.lower().endswith(".rle"):
         return load_rle(filepath, rows, cols)
     return load_cells(filepath, rows, cols)
@@ -723,6 +833,37 @@ def make_grid(rows, cols):
     return [[0] * cols for _ in range(rows)]
 
 
+def place_wireworld_pattern(grid, name, row_off=None, col_off=None):
+    """Place a Wireworld pattern (with multi-state cells) onto the grid."""
+    rows, cols = len(grid), len(grid[0])
+    cells = WIREWORLD_PATTERNS[name]
+    if not cells:
+        return
+    max_r = max(r for r, c, s in cells)
+    max_c = max(c for r, c, s in cells)
+    if row_off is None:
+        row_off = (rows - max_r) // 2
+    if col_off is None:
+        col_off = (cols - max_c) // 2
+    for r, c, s in cells:
+        nr, nc = r + row_off, c + col_off
+        if 0 <= nr < rows and 0 <= nc < cols:
+            grid[nr][nc] = s
+
+
+def _wireworld_pattern_to_stamp(name):
+    """Convert a Wireworld pattern to a 2D stamp (list of lists with state values)."""
+    cells = WIREWORLD_PATTERNS.get(name)
+    if not cells:
+        return None
+    max_r = max(r for r, c, s in cells) + 1
+    max_c = max(c for r, c, s in cells) + 1
+    stamp = [[0] * max_c for _ in range(max_r)]
+    for r, c, s in cells:
+        stamp[r][c] = s
+    return stamp
+
+
 def place_pattern(grid, name, row_off=None, col_off=None):
     rows, cols = len(grid), len(grid[0])
     cells = PATTERNS[name]
@@ -751,6 +892,10 @@ def place_pattern(grid, name, row_off=None, col_off=None):
 def step(grid, rule=None):
     if rule is None:
         rule = RULES["life"]
+    if _is_wireworld(rule):
+        if _HAS_NUMPY:
+            return _step_wireworld_numpy(grid)
+        return _step_wireworld(grid)
     if _HAS_NUMPY:
         return _step_numpy(grid, rule)
     return _step_python(grid, rule)
@@ -809,6 +954,58 @@ def _neighbours(grid, r, c, rows, cols):
     return count
 
 
+def _step_wireworld(grid):
+    """Wireworld step function — pure Python backend."""
+    rows, cols = len(grid), len(grid[0])
+    new = make_grid(rows, cols)
+    for r in range(rows):
+        for c in range(cols):
+            cell = grid[r][c]
+            if cell == WW_EMPTY:
+                new[r][c] = WW_EMPTY
+            elif cell == WW_HEAD:
+                new[r][c] = WW_TAIL
+            elif cell == WW_TAIL:
+                new[r][c] = WW_CONDUCTOR
+            elif cell == WW_CONDUCTOR:
+                # Count electron head neighbours
+                heads = 0
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        if dr == 0 and dc == 0:
+                            continue
+                        nr, nc = (r + dr) % rows, (c + dc) % cols
+                        if grid[nr][nc] == WW_HEAD:
+                            heads += 1
+                new[r][c] = WW_HEAD if heads in (1, 2) else WW_CONDUCTOR
+    return new
+
+
+def _step_wireworld_numpy(grid):
+    """Wireworld step function — vectorized NumPy backend."""
+    arr = np.array(grid, dtype=np.int32)
+    rows, cols = arr.shape
+    # Count electron head neighbours for each cell
+    head_mask = (arr == WW_HEAD).astype(np.int32)
+    kernel = np.array([[1, 1, 1],
+                       [1, 0, 1],
+                       [1, 1, 1]], dtype=np.int32)
+    head_neighbors = convolve2d(head_mask, kernel, mode="same", boundary="wrap")
+    new = np.zeros_like(arr)
+    # Empty stays empty
+    # Head -> Tail
+    new[arr == WW_HEAD] = WW_TAIL
+    # Tail -> Conductor
+    new[arr == WW_TAIL] = WW_CONDUCTOR
+    # Conductor -> Head if 1 or 2 head neighbours, else stays Conductor
+    conductor_mask = arr == WW_CONDUCTOR
+    becomes_head = conductor_mask & ((head_neighbors == 1) | (head_neighbors == 2))
+    stays_conductor = conductor_mask & ~becomes_head
+    new[becomes_head] = WW_HEAD
+    new[stays_conductor] = WW_CONDUCTOR
+    return new.tolist()
+
+
 def _age_color(age):
     """Return curses color pair number based on cell age."""
     if age <= 3:
@@ -821,6 +1018,17 @@ def _age_color(age):
         return 7   # magenta — ancient
 
 
+def _wireworld_color(state):
+    """Return curses color pair number for a Wireworld cell state."""
+    if state == WW_HEAD:
+        return 14      # blue — electron head
+    elif state == WW_TAIL:
+        return 13      # red — electron tail
+    elif state == WW_CONDUCTOR:
+        return 15      # yellow — conductor/wire
+    return 1           # fallback
+
+
 # --- Animated GIF Export ---
 
 # RGB palette matching the terminal aging colors
@@ -830,9 +1038,9 @@ _GIF_PALETTE = [
     (0, 200, 200),    # 2: age 4-8, cyan (young)
     (0, 80, 255),     # 3: age 9-20, blue (mature)
     (200, 0, 200),    # 4: age 21+, magenta (ancient)
-    (0, 0, 0),        # 5: padding
-    (0, 0, 0),        # 6: padding
-    (0, 0, 0),        # 7: padding
+    (0, 80, 255),     # 5: Wireworld: electron head (blue)
+    (200, 0, 0),      # 6: Wireworld: electron tail (red)
+    (200, 200, 0),    # 7: Wireworld: conductor (yellow)
 ]
 
 
@@ -848,6 +1056,17 @@ def _age_to_gif_index(age):
         return 3
     else:
         return 4
+
+
+def _wireworld_to_gif_index(state):
+    """Map Wireworld cell state to GIF palette index."""
+    if state == WW_HEAD:
+        return 5
+    elif state == WW_TAIL:
+        return 6
+    elif state == WW_CONDUCTOR:
+        return 7
+    return 0
 
 
 def _lzw_compress(pixels, min_code_size):
@@ -930,7 +1149,7 @@ def _gif_sub_blocks(data):
     return bytes(result)
 
 
-def export_gif(history_frames, rows, cols, filepath, cell_size=4, delay_cs=10):
+def export_gif(history_frames, rows, cols, filepath, cell_size=4, delay_cs=10, wireworld=False):
     """Export a list of grid snapshots as an animated GIF.
 
     Args:
@@ -939,6 +1158,7 @@ def export_gif(history_frames, rows, cols, filepath, cell_size=4, delay_cs=10):
         filepath: output .gif path
         cell_size: pixel size of each cell (default 4)
         delay_cs: delay between frames in centiseconds (default 10 = 100ms)
+        wireworld: if True, use Wireworld color mapping
     """
     width = cols * cell_size
     height = rows * cell_size
@@ -986,7 +1206,7 @@ def export_gif(history_frames, rows, cols, filepath, cell_size=4, delay_cs=10):
         for r in range(rows):
             row_pixels = []
             for c in range(cols):
-                idx = _age_to_gif_index(frame_grid[r][c])
+                idx = _wireworld_to_gif_index(frame_grid[r][c]) if wireworld else _age_to_gif_index(frame_grid[r][c])
                 row_pixels.extend([idx] * cell_size)
             for _ in range(cell_size):
                 pixels.extend(row_pixels)
@@ -1427,15 +1647,20 @@ class NetworkPeer:
 
     def send_grid_sync(self, grid, generation, rule):
         """Send full grid state to peer (used on initial connect)."""
-        # Convert grid to 0/1 (strip age info for sync)
-        flat = [[1 if c else 0 for c in row] for row in grid]
-        b = "".join(str(d) for d in sorted(rule["b"]))
-        s = "".join(str(d) for d in sorted(rule["s"]))
+        if rule.get("wireworld"):
+            flat = [list(row) for row in grid]
+            rule_str = "Wireworld"
+        else:
+            # Convert grid to 0/1 (strip age info for sync)
+            flat = [[1 if c else 0 for c in row] for row in grid]
+            b = "".join(str(d) for d in sorted(rule["b"]))
+            s = "".join(str(d) for d in sorted(rule["s"]))
+            rule_str = f"B{b}/S{s}"
         self.send({
             "t": "sync",
             "g": flat,
             "gen": generation,
-            "rule": f"B{b}/S{s}",
+            "rule": rule_str,
             "name": rule.get("name", ""),
         })
 
@@ -1449,7 +1674,7 @@ class NetworkPeer:
 
     def send_step(self, grid, generation):
         """Host sends grid state after a simulation step."""
-        flat = [[1 if c else 0 for c in row] for row in grid]
+        flat = [list(row) for row in grid]
         self.send({"t": "step", "g": flat, "gen": generation})
 
     def send_clear(self):
@@ -1459,11 +1684,15 @@ class NetworkPeer:
         self.send({"t": "pause", "p": paused})
 
     def send_rule_change(self, rule, rule_idx):
-        b = "".join(str(d) for d in sorted(rule["b"]))
-        s = "".join(str(d) for d in sorted(rule["s"]))
+        if rule.get("wireworld"):
+            rule_str = "Wireworld"
+        else:
+            b = "".join(str(d) for d in sorted(rule["b"]))
+            s = "".join(str(d) for d in sorted(rule["s"]))
+            rule_str = f"B{b}/S{s}"
         self.send({
             "t": "rule",
-            "rule": f"B{b}/S{s}",
+            "rule": rule_str,
             "name": rule.get("name", ""),
             "idx": rule_idx,
         })
@@ -1510,6 +1739,12 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
     curses.init_pair(10, curses.COLOR_BLACK, curses.COLOR_RED)    # remote cursor on dead
     curses.init_pair(11, curses.COLOR_WHITE, curses.COLOR_RED)    # remote cursor on live
     curses.init_pair(12, curses.COLOR_YELLOW, -1)                # detected pattern highlight
+    curses.init_pair(13, curses.COLOR_RED, -1)                   # Wireworld: electron tail
+    curses.init_pair(14, curses.COLOR_BLUE, -1)                  # Wireworld: electron head
+    curses.init_pair(15, curses.COLOR_YELLOW, -1)                # Wireworld: conductor
+    curses.init_pair(16, curses.COLOR_BLACK, curses.COLOR_BLUE)  # cursor on head
+    curses.init_pair(17, curses.COLOR_BLACK, curses.COLOR_RED)   # cursor on tail
+    curses.init_pair(18, curses.COLOR_BLACK, curses.COLOR_YELLOW)  # cursor on conductor
 
     # Multiplayer state
     mp = network is not None
@@ -1554,6 +1789,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
             break
 
     while True:
+        ww = _is_wireworld(rule)
+
         # Track population
         pop = _count_population(grid)
         if not browsing_history:
@@ -1605,7 +1842,17 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 age = grid[r][c]
                 cell_str = "\u2588\u2588" if age else "  "
                 if editing and r == cursor_r and c == cursor_c and not pasting:
-                    attr = curses.color_pair(4) if age else curses.color_pair(3)
+                    if ww:
+                        if age == WW_HEAD:
+                            attr = curses.color_pair(16)
+                        elif age == WW_TAIL:
+                            attr = curses.color_pair(17)
+                        elif age == WW_CONDUCTOR:
+                            attr = curses.color_pair(18)
+                        else:
+                            attr = curses.color_pair(3)
+                    else:
+                        attr = curses.color_pair(4) if age else curses.color_pair(3)
                 elif (r, c) in paste_cells:
                     attr = curses.color_pair(9)
                     cell_str = "\u2588\u2588"
@@ -1615,6 +1862,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     attr = curses.color_pair(8)
                 elif detected_cells and (r, c) in detected_cells:
                     attr = curses.color_pair(12)
+                elif ww:
+                    attr = curses.color_pair(_wireworld_color(age)) if age else curses.color_pair(1)
                 else:
                     attr = curses.color_pair(_age_color(age)) if age else curses.color_pair(1)
                 try:
@@ -1666,7 +1915,11 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
             sel_w = abs(cursor_c - sel_anchor_c) + 1
             status = f" SELECT ({sel_anchor_r},{sel_anchor_c})->({cursor_r},{cursor_c}) {sel_h}x{sel_w} | [arrows]resize [y]ank [x]cut [esc]cancel"
         elif editing:
-            status = f" EDITOR ({cursor_r},{cursor_c}) | Gen {generation} | {rule_label} | [arrows]move [enter/space]toggle [v]select [p]aste [P]attern [s]ave(rle/cells) [l]oad [c]lear [R]ule [e]xit [q]uit"
+            if ww:
+                ww_state_name = {WW_EMPTY: "empty", WW_HEAD: "HEAD", WW_TAIL: "TAIL", WW_CONDUCTOR: "wire"}.get(grid[cursor_r][cursor_c], "?")
+                status = f" EDITOR ({cursor_r},{cursor_c}) [{ww_state_name}] | Gen {generation} | {rule_label} | [arrows]move [enter/space]cycle(empty>wire>head>tail) [v]select [p]aste [P]attern [s]ave [l]oad [c]lear [R]ule [e]xit [q]uit"
+            else:
+                status = f" EDITOR ({cursor_r},{cursor_c}) | Gen {generation} | {rule_label} | [arrows]move [enter/space]toggle [v]select [p]aste [P]attern [s]ave(rle/cells) [l]oad [c]lear [R]ule [e]xit [q]uit"
         else:
             pop_str = f" | Pop {pop}" if not show_stats else ""
             state_str = 'REWOUND' if browsing_history else ('PAUSED' if paused else 'Running')
@@ -1742,17 +1995,23 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     # Parse rule from sync
                     rule_s = msg.get("rule", "")
                     if rule_s:
-                        try:
-                            rule = parse_rule_string(rule_s)
-                            rn = msg.get("name", "")
-                            if rn:
-                                rule["name"] = rn
-                        except ValueError:
-                            pass
+                        if rule_s.lower() == "wireworld":
+                            rule = RULES["wireworld"]
+                        else:
+                            try:
+                                rule = parse_rule_string(rule_s)
+                                rn = msg.get("name", "")
+                                if rn:
+                                    rule["name"] = rn
+                            except ValueError:
+                                pass
                     # Find matching rule_idx
                     rule_idx = -1
                     for i, rname in enumerate(RULE_NAMES):
-                        if RULES[rname]["b"] == rule["b"] and RULES[rname]["s"] == rule["s"]:
+                        if RULES[rname] is rule:
+                            rule_idx = i
+                            break
+                        elif not rule.get("wireworld") and RULES[rname]["b"] == rule["b"] and RULES[rname]["s"] == rule["s"]:
                             rule_idx = i
                             break
                     history = [copy.deepcopy(grid)]
@@ -1793,13 +2052,16 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 elif mt == "rule":
                     rule_s = msg.get("rule", "")
                     if rule_s:
-                        try:
-                            rule = parse_rule_string(rule_s)
-                            rn = msg.get("name", "")
-                            if rn:
-                                rule["name"] = rn
-                        except ValueError:
-                            pass
+                        if rule_s.lower() == "wireworld":
+                            rule = RULES["wireworld"]
+                        else:
+                            try:
+                                rule = parse_rule_string(rule_s)
+                                rn = msg.get("name", "")
+                                if rn:
+                                    rule["name"] = rn
+                            except ValueError:
+                                pass
                     ridx = msg.get("idx", -1)
                     if ridx >= 0:
                         rule_idx = ridx
@@ -1828,9 +2090,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                         for pc in range(len(clipboard[0])):
                             gr, gc = cursor_r + pr, cursor_c + pc
                             if 0 <= gr < rows and 0 <= gc < cols and clipboard[pr][pc]:
-                                grid[gr][gc] = 1
+                                grid[gr][gc] = clipboard[pr][pc]
                                 if mp:
-                                    network.send_cell_toggle(gr, gc, 1)
+                                    network.send_cell_toggle(gr, gc, grid[gr][gc])
                 pasting = False
             elif key == 27:  # Escape
                 pasting = False
@@ -1880,7 +2142,15 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
             elif key == curses.KEY_RIGHT:
                 cursor_c = (cursor_c + 1) % cols
             elif key in (ord("\n"), ord(" "), curses.KEY_ENTER):
-                grid[cursor_r][cursor_c] = 0 if grid[cursor_r][cursor_c] else 1
+                if ww:
+                    # Cycle: empty -> conductor -> head -> tail -> empty
+                    cur = grid[cursor_r][cursor_c]
+                    grid[cursor_r][cursor_c] = {
+                        WW_EMPTY: WW_CONDUCTOR, WW_CONDUCTOR: WW_HEAD,
+                        WW_HEAD: WW_TAIL, WW_TAIL: WW_EMPTY,
+                    }.get(cur, WW_EMPTY)
+                else:
+                    grid[cursor_r][cursor_c] = 0 if grid[cursor_r][cursor_c] else 1
                 if mp:
                     network.send_cell_toggle(cursor_r, cursor_c, grid[cursor_r][cursor_c])
             elif key == ord("v"):
@@ -1894,7 +2164,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     pasting = True
             elif key == ord("P"):
                 # Pattern stamp picker: load a built-in pattern to clipboard
-                stamp_names = [n for n in PATTERNS if n != "random"]
+                if ww:
+                    stamp_names = list(WIREWORLD_PATTERNS.keys())
+                else:
+                    stamp_names = [n for n in PATTERNS if n != "random"]
                 if stamp_names:
                     sel = 0
                     picking = True
@@ -1910,12 +2183,20 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                             if i + 2 >= max_y - 1:
                                 break
                             attr = curses.A_REVERSE if i == sel else 0
-                            cells = PATTERNS[sn]
-                            dims = ""
-                            if cells:
-                                mr = max(r for r, c in cells) + 1
-                                mc = max(c for r, c in cells) + 1
-                                dims = f"  ({mr}x{mc})"
+                            if ww:
+                                cells = WIREWORLD_PATTERNS[sn]
+                                dims = ""
+                                if cells:
+                                    mr = max(r for r, c, s in cells) + 1
+                                    mc = max(c for r, c, s in cells) + 1
+                                    dims = f"  ({mr}x{mc})"
+                            else:
+                                cells = PATTERNS[sn]
+                                dims = ""
+                                if cells:
+                                    mr = max(r for r, c in cells) + 1
+                                    mc = max(c for r, c in cells) + 1
+                                    dims = f"  ({mr}x{mc})"
                             try:
                                 stdscr.addstr(i + 2, 2, sn + dims, attr)
                             except curses.error:
@@ -1927,7 +2208,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                         elif pk == curses.KEY_DOWN:
                             sel = (sel + 1) % len(stamp_names)
                         elif pk in (ord("\n"), curses.KEY_ENTER):
-                            clipboard = _pattern_to_stamp(stamp_names[sel])
+                            if ww:
+                                clipboard = _wireworld_pattern_to_stamp(stamp_names[sel])
+                            else:
+                                clipboard = _pattern_to_stamp(stamp_names[sel])
                             if clipboard:
                                 pasting = True
                             picking = False
@@ -1959,7 +2243,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     if use_rle:
                         save_rle(grid, filepath, rule)
                     else:
-                        save_cells(grid, filepath)
+                        save_cells(grid, filepath, rule)
             elif key == ord("l"):
                 max_y, max_x = stdscr.getmaxyx()
                 patterns = list_saved_patterns()
@@ -1991,7 +2275,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                             sel = (sel + 1) % len(patterns)
                         elif pk in (ord("\n"), curses.KEY_ENTER):
                             filepath = os.path.join(CELLS_DIR, patterns[sel])
-                            grid = _load_pattern_file(filepath, rows, cols)
+                            grid, loaded_ww = _load_pattern_file(filepath, rows, cols)
+                            if loaded_ww:
+                                rule = RULES["wireworld"]
+                                rule_idx = RULE_NAMES.index("wireworld")
                             generation = 0
                             history = [copy.deepcopy(grid)]
                             hist_idx = 0
@@ -2005,19 +2292,36 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     # No saved patterns; prompt for a file path
                     path = curses_input(stdscr, "Load file path: ", max_y, max_x)
                     if path and os.path.isfile(path):
-                        grid = _load_pattern_file(path, rows, cols)
+                        grid, loaded_ww = _load_pattern_file(path, rows, cols)
+                        if loaded_ww:
+                            rule = RULES["wireworld"]
+                            rule_idx = RULE_NAMES.index("wireworld")
                         generation = 0
                         history = [copy.deepcopy(grid)]
                         hist_idx = 0
                         browsing_history = False
                         pop_history = []
             elif key == ord("R"):
+                was_ww = ww
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
                 else:
                     rule_idx = 0
                     rule = RULES[RULE_NAMES[0]]
+                new_ww = _is_wireworld(rule)
+                if was_ww != new_ww:
+                    # Clear grid when switching between wireworld and binary modes
+                    for r2 in range(rows):
+                        for c2 in range(cols):
+                            grid[r2][c2] = 0
+                    if new_ww:
+                        place_wireworld_pattern(grid, "ww_clock")
+                    generation = 0
+                    history = [copy.deepcopy(grid)]
+                    hist_idx = 0
+                    browsing_history = False
+                    pop_history = []
                 if mp:
                     network.send_rule_change(rule, rule_idx)
             elif key == ord("g"):
@@ -2106,12 +2410,25 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 if mp:
                     network.send_grid_sync(grid, generation, rule)
             elif key == ord("R"):
+                was_ww = ww
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
                 else:
                     rule_idx = 0
                     rule = RULES[RULE_NAMES[0]]
+                new_ww = _is_wireworld(rule)
+                if was_ww != new_ww:
+                    for r2 in range(rows):
+                        for c2 in range(cols):
+                            grid[r2][c2] = 0
+                    if new_ww:
+                        place_wireworld_pattern(grid, "ww_clock")
+                    generation = 0
+                    history = [copy.deepcopy(grid)]
+                    hist_idx = 0
+                    browsing_history = False
+                    pop_history = []
                 if mp:
                     network.send_rule_change(rule, rule_idx)
             elif key == ord("n") and (paused or browsing_history):
@@ -2180,7 +2497,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                         pass
                     try:
                         export_gif(history, rows, cols, gif_path,
-                                   cell_size=4, delay_cs=max(1, int(delay * 100)))
+                                   cell_size=4, delay_cs=max(1, int(delay * 100)),
+                                   wireworld=ww)
                         export_msg = f" Saved {gif_path}"
                     except (OSError, IOError) as exc:
                         export_msg = f" GIF export failed: {exc}"
@@ -2391,7 +2709,12 @@ def main():
                 if os.path.isfile(candidate):
                     path = candidate
                     break
-        grid = _load_pattern_file(path, args.rows, args.cols)
+        grid, loaded_ww = _load_pattern_file(path, args.rows, args.cols)
+        if loaded_ww:
+            rule = RULES["wireworld"]
+    elif args.rule.lower() == "wireworld":
+        # Wireworld mode with default pattern: place a clock
+        place_wireworld_pattern(grid, "ww_clock")
     else:
         place_pattern(grid, args.pattern)
 

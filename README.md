@@ -1,6 +1,6 @@
 # Cellular Automaton — Terminal Simulator
 
-A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze) and supports arbitrary rules via B/S notation.
+A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, and supports arbitrary rules via B/S notation.
 
 ## Usage
 
@@ -15,6 +15,7 @@ python3 life.py --load ~/patterns/my.cells         # load from a file path
 python3 life.py --rule highlife --pattern random    # HighLife ruleset
 python3 life.py --rule daynight                    # Day & Night ruleset
 python3 life.py --rule B2/S                        # custom rule via B/S notation
+python3 life.py --rule wireworld                   # Wireworld 4-state automaton
 python3 life.py --script probabilistic_life        # run a user script on startup
 python3 life.py --script ~/my_script.py            # run a script from a file path
 ```
@@ -28,7 +29,7 @@ python3 life.py --script ~/my_script.py            # run a script from a file pa
 | `--speed`   | 0.1       | Delay between generations (seconds)  |
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
 | `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
-| `--rule`    | `life`    | Rule preset or B/S notation (e.g. `B36/S23`) |
+| `--rule`    | `life`    | Rule preset, `wireworld`, or B/S notation (e.g. `B36/S23`) |
 | `--script`  | —         | Run a Python script on startup (path or name from `~/.life-scripts/`) |
 
 ### Controls
@@ -120,8 +121,53 @@ All rules use Birth/Survival notation — a cell is born if it has exactly B nei
 | `morley`   | B368/S245  | Move — glider-rich rule |
 | `2x2`      | B36/S125   | Forms 2x2 blocks |
 | `maze`     | B3/S12345  | Generates maze-like corridors |
+| `wireworld`| *(4-state)* | Logic circuits — see [Wireworld](#wireworld) below |
 
 Use `--rule <preset>` or `--rule B.../S...` for custom rules. Press `R` at runtime to cycle through presets.
+
+## Wireworld
+
+Wireworld is a 4-state cellular automaton designed for simulating digital logic circuits. Unlike the B/S rulesets above (which are binary alive/dead), Wireworld cells have four distinct states:
+
+| State        | Color  | Rule                                                        |
+|--------------|--------|-------------------------------------------------------------|
+| **Empty**    | black  | Stays empty forever                                         |
+| **Electron head** | blue | Becomes electron tail next generation                  |
+| **Electron tail** | red  | Becomes conductor next generation                      |
+| **Conductor**     | yellow | Becomes electron head if exactly 1 or 2 neighbors are electron heads; otherwise stays conductor |
+
+This simple ruleset is sufficient to build functional logic gates, clocks, diodes, and even rudimentary computers — all within the terminal UI.
+
+### Starting Wireworld
+
+```bash
+python3 life.py --rule wireworld          # starts with a default clock pattern
+```
+
+Press `R` at runtime to cycle through all rulesets including Wireworld. Switching between Wireworld and binary rulesets auto-clears the grid (since state semantics differ).
+
+### Built-in Wireworld Patterns
+
+Press `P` in editor mode while in Wireworld to access these patterns via the stamp picker:
+
+| Pattern        | Description                                          |
+|----------------|------------------------------------------------------|
+| `ww_diode`     | Signal flows in one direction only                   |
+| `ww_clock`     | 6-cell loop generating periodic electron signals     |
+| `ww_or_gate`   | Outputs a signal if either input has a signal        |
+| `ww_and_gate`  | Outputs a signal only if both inputs have signals    |
+
+### Editing
+
+In editor mode, `Enter`/`Space` cycles through states: empty → conductor → head → tail → empty. The status bar shows the current cell state.
+
+### Save/Load
+
+Wireworld patterns are fully supported in both RLE and `.cells` formats. RLE uses multi-state encoding (`b`=empty, `o`=head, `B`=tail, `C`=conductor) and saves `Wireworld` as the rule string. The `.cells` format uses `H`/`T`/`C` characters. Loading a Wireworld file automatically switches to Wireworld mode.
+
+### GIF Export
+
+GIF export uses a Wireworld-specific palette (blue/red/yellow) when in Wireworld mode.
 
 ## Population Statistics Dashboard
 
