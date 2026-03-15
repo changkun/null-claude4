@@ -46,6 +46,7 @@ RULES = {
     "physarum": {"b": set(), "s": set(), "name": "Physarum (dendritic)", "physarum": True},
     "sandpile": {"b": set(), "s": set(), "name": "Sandpile (single-source)", "sandpile": True},
     "dla": {"b": set(), "s": set(), "name": "DLA (snowflake)", "dla": True},
+    "forestfire": {"b": set(), "s": set(), "name": "Forest Fire (classic)", "forestfire": True},
 }
 
 RULE_NAMES = list(RULES.keys())
@@ -166,6 +167,11 @@ def _is_sandpile(rule):
 def _is_dla(rule):
     """Check if the current rule is the Diffusion-Limited Aggregation simulation."""
     return rule.get("dla", False)
+
+
+def _is_forestfire(rule):
+    """Check if the current rule is the Forest Fire cellular automaton."""
+    return rule.get("forestfire", False)
 
 
 # --- Wa-Tor Predator-Prey Ecosystem ---
@@ -1934,6 +1940,145 @@ def _dla_color(val):
     return 21          # core / seed — red
 
 
+# --- Forest Fire: Probabilistic Cellular Automaton ---
+# Drossel & Schwabl (1992) model of self-organized criticality through
+# fire propagation.  Three cell states: empty (0), tree (1), burning (2).
+# Rules each tick:
+#   1. Burning → empty (fire burns out)
+#   2. Tree with burning neighbor → burning (fire spreads)
+#   3. Tree → burning with probability f (lightning)
+#   4. Empty → tree with probability p (growth)
+# Produces power-law cluster-size distributions and dramatic fire fronts.
+
+FORESTFIRE_PRESETS = {
+    "classic": {
+        "name": "Classic",
+        "description": "Drossel-Schwabl classic parameters",
+        "p_grow": 0.05,
+        "f_lightning": 0.0001,
+        "initial_density": 0.55,
+    },
+    "tinderbox": {
+        "name": "Tinderbox",
+        "description": "Fast growth, frequent lightning — constant firestorms",
+        "p_grow": 0.10,
+        "f_lightning": 0.001,
+        "initial_density": 0.70,
+    },
+    "old-growth": {
+        "name": "Old Growth",
+        "description": "Slow growth, rare lightning — massive forests then catastrophic fires",
+        "p_grow": 0.02,
+        "f_lightning": 0.00002,
+        "initial_density": 0.40,
+    },
+    "drought": {
+        "name": "Drought",
+        "description": "Low regrowth, moderate lightning — sparse scrubland with flickers",
+        "p_grow": 0.01,
+        "f_lightning": 0.0005,
+        "initial_density": 0.25,
+    },
+    "rainforest": {
+        "name": "Rainforest",
+        "description": "Rapid regrowth dominates — brief fires barely make a dent",
+        "p_grow": 0.15,
+        "f_lightning": 0.00005,
+        "initial_density": 0.80,
+    },
+}
+FORESTFIRE_PRESET_NAMES = list(FORESTFIRE_PRESETS.keys())
+
+_FF_EMPTY = 0
+_FF_TREE = 1
+_FF_BURNING = 2
+
+_ff_grid = None
+_ff_rows, _ff_cols = 0, 0
+_ff_preset_idx = 0
+_ff_p_grow = 0.05
+_ff_f_lightning = 0.0001
+
+
+def _ff_init(rows, cols, preset_name=None):
+    """Initialize the Forest Fire grid."""
+    global _ff_grid, _ff_rows, _ff_cols, _ff_p_grow, _ff_f_lightning
+    import random as _rng
+    _ff_rows, _ff_cols = rows, cols
+    if preset_name is None:
+        preset_name = FORESTFIRE_PRESET_NAMES[_ff_preset_idx]
+    preset = FORESTFIRE_PRESETS[preset_name]
+    _ff_p_grow = preset["p_grow"]
+    _ff_f_lightning = preset["f_lightning"]
+    density = preset["initial_density"]
+
+    _ff_grid = [[_FF_EMPTY] * cols for _ in range(rows)]
+    for r in range(rows):
+        for c in range(cols):
+            if _rng.random() < density:
+                _ff_grid[r][c] = _FF_TREE
+
+
+def _ff_step():
+    """Advance Forest Fire by one generation."""
+    import random as _rng
+    rows, cols = _ff_rows, _ff_cols
+    if rows < 1 or cols < 1:
+        return
+    new = [[_FF_EMPTY] * cols for _ in range(rows)]
+    for r in range(rows):
+        for c in range(cols):
+            cell = _ff_grid[r][c]
+            if cell == _FF_BURNING:
+                new[r][c] = _FF_EMPTY
+            elif cell == _FF_TREE:
+                # Check 4-neighbors for fire
+                burning_neighbor = False
+                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < rows and 0 <= nc < cols:
+                        if _ff_grid[nr][nc] == _FF_BURNING:
+                            burning_neighbor = True
+                            break
+                if burning_neighbor:
+                    new[r][c] = _FF_BURNING
+                elif _rng.random() < _ff_f_lightning:
+                    new[r][c] = _FF_BURNING
+                else:
+                    new[r][c] = _FF_TREE
+            else:  # empty
+                if _rng.random() < _ff_p_grow:
+                    new[r][c] = _FF_TREE
+                else:
+                    new[r][c] = _FF_EMPTY
+    _ff_grid[:] = new
+
+
+def _ff_to_grid(rows, cols):
+    """Convert Forest Fire state to display grid (0-100 scale)."""
+    grid = [[0] * cols for _ in range(rows)]
+    for r in range(min(rows, _ff_rows)):
+        for c in range(min(cols, _ff_cols)):
+            cell = _ff_grid[r][c]
+            if cell == _FF_TREE:
+                grid[r][c] = 30    # tree → green range
+            elif cell == _FF_BURNING:
+                grid[r][c] = 90    # burning → red/yellow range
+            # empty stays 0
+    return grid
+
+
+def _ff_color(val):
+    """Map Forest Fire grid value to a curses color pair."""
+    if val <= 0:
+        return 1       # empty — dark/default
+    if val <= 50:
+        return 1       # tree — green (pair 1 = COLOR_GREEN)
+    if val <= 80:
+        return 15      # burning bright — yellow (pair 15)
+    return 21          # burning hot — red (pair 21)
+
+
 # --- Lenia: Continuous Smooth-Kernel Cellular Automata ---
 # Generalizes Conway's Life into continuous space and time using smooth
 # ring-shaped kernels and a Gaussian growth function.
@@ -3032,6 +3177,10 @@ def place_pattern(grid, name, row_off=None, col_off=None):
 def step(grid, rule=None):
     if rule is None:
         rule = RULES["life"]
+    if _is_forestfire(rule):
+        rows, cols = len(grid), len(grid[0])
+        _ff_step()
+        return _ff_to_grid(rows, cols)
     if _is_dla(rule):
         rows, cols = len(grid), len(grid[0])
         _dla_step()
@@ -4195,6 +4344,7 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
     ln = _is_lenia(rule)
     tm = _is_turmite(rule)
     ph = _is_physarum(rule)
+    ff = _is_forestfire(rule)
 
     # Initialize grid
     grid = make_grid(rows, cols)
@@ -4209,6 +4359,9 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
         grid, loaded_ww = _load_pattern_file(path, rows, cols)
         if loaded_ww:
             ww = True
+    elif ff:
+        _ff_init(rows, cols)
+        grid = _ff_to_grid(rows, cols)
     elif ph:
         _phys_init(rows, cols)
         grid = _phys_to_grid(rows, cols)
@@ -5044,6 +5197,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         physarum = _is_physarum(rule)
         sandpile = _is_sandpile(rule)
         dla = _is_dla(rule)
+        forestfire = _is_forestfire(rule)
 
         # Track population
         pop = _count_population(grid)
@@ -5143,6 +5297,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                         attr = curses.color_pair(8)
                     elif detected_cells and (r, c) in detected_cells:
                         attr = curses.color_pair(12)
+                    elif forestfire:
+                        attr = curses.color_pair(_ff_color(age))
+                        cell_str = "\u2588\u2588" if age else "  "
                     elif dla:
                         attr = curses.color_pair(_dla_color(age))
                         cell_str = "\u2588\u2588" if age else "  "
@@ -5243,7 +5400,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 wator_str = f" | Fish:{_wf} Sharks:{_ws} breed={_wator_fish_breed}/{_wator_shark_breed} starve={_wator_shark_starve} [<>]preset"
             else:
                 wator_str = ""
-            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{topo_str}{hashlife_str}{gs_str}{eca_str}{turmite_str}{wator_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [T]opo [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
+            ff_str = f" | p={_ff_p_grow:.4f} f={_ff_f_lightning:.5f} [<>]preset" if forestfire else ""
+            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{topo_str}{hashlife_str}{gs_str}{eca_str}{turmite_str}{wator_str}{ff_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [T]opo [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
@@ -5630,6 +5788,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_fs = fallingsand
                 was_phys = physarum
                 was_sp = sandpile
+                was_ff = forestfire
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -5645,10 +5804,11 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_fs = _is_fallingsand(rule)
                 new_phys = _is_physarum(rule)
                 new_sp = _is_sandpile(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp:
+                new_ff = _is_forestfire(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff:
                     hashlife_active = False
                 # Mode transition: clear grid and re-initialize
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -5679,6 +5839,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_sp:
                         _sp_init(rows, cols)
                         grid = _sp_to_grid(rows, cols)
+                    elif new_ff:
+                        _ff_init(rows, cols)
+                        grid = _ff_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -5802,6 +5965,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_fs = fallingsand
                 was_phys = physarum
                 was_sp = sandpile
+                was_ff = forestfire
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -5817,9 +5981,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_fs = _is_fallingsand(rule)
                 new_phys = _is_physarum(rule)
                 new_sp = _is_sandpile(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp:
+                new_ff = _is_forestfire(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys or new_sp or new_ff:
                     hashlife_active = False
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys or was_sp != new_sp or was_ff != new_ff:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -5850,6 +6015,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_sp:
                         _sp_init(rows, cols)
                         grid = _sp_to_grid(rows, cols)
+                    elif new_ff:
+                        _ff_init(rows, cols)
+                        grid = _ff_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -6173,6 +6341,30 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 rule["name"] = f"DLA ({DLA_PRESETS[preset_name]['name']})"
                 _dla_init(rows, cols, preset_name)
                 grid = _dla_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord("<") and forestfire:
+                # Previous Forest Fire preset
+                _ff_preset_idx = (_ff_preset_idx - 1) % len(FORESTFIRE_PRESET_NAMES)
+                preset_name = FORESTFIRE_PRESET_NAMES[_ff_preset_idx]
+                rule["name"] = f"Forest Fire ({FORESTFIRE_PRESETS[preset_name]['name']})"
+                _ff_init(rows, cols, preset_name)
+                grid = _ff_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord(">") and forestfire:
+                # Next Forest Fire preset
+                _ff_preset_idx = (_ff_preset_idx + 1) % len(FORESTFIRE_PRESET_NAMES)
+                preset_name = FORESTFIRE_PRESET_NAMES[_ff_preset_idx]
+                rule["name"] = f"Forest Fire ({FORESTFIRE_PRESETS[preset_name]['name']})"
+                _ff_init(rows, cols, preset_name)
+                grid = _ff_to_grid(rows, cols)
                 generation = 0
                 history = [copy.deepcopy(grid)]
                 hist_idx = 0
@@ -7043,6 +7235,13 @@ def main():
              "Options: " + ", ".join(DLA_PRESETS.keys()),
     )
     parser.add_argument(
+        "--forestfire-preset",
+        choices=list(FORESTFIRE_PRESETS.keys()),
+        default="classic",
+        help="Forest Fire preset when --rule forestfire (default: classic). "
+             "Options: " + ", ".join(FORESTFIRE_PRESETS.keys()),
+    )
+    parser.add_argument(
         "--discover",
         action="store_true",
         default=False,
@@ -7111,7 +7310,7 @@ def main():
     )
     args = parser.parse_args()
 
-    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx, _fs_preset_idx, _sp_preset_idx, _dla_preset_idx
+    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx, _fs_preset_idx, _sp_preset_idx, _dla_preset_idx, _ff_preset_idx
 
     # Headless batch-render mode: output PNG frames without terminal UI
     if args.render is not None:
@@ -7288,6 +7487,15 @@ def main():
             rule["name"] = f"DLA ({preset['name']})"
         _dla_init(args.rows, args.cols, dla_preset_name)
         grid = _dla_to_grid(args.rows, args.cols)
+    elif args.rule.lower() == "forestfire":
+        # Forest Fire probabilistic cellular automaton
+        ff_preset_name = args.forestfire_preset
+        if ff_preset_name in FORESTFIRE_PRESETS:
+            _ff_preset_idx = FORESTFIRE_PRESET_NAMES.index(ff_preset_name)
+            preset = FORESTFIRE_PRESETS[ff_preset_name]
+            rule["name"] = f"Forest Fire ({preset['name']})"
+        _ff_init(args.rows, args.cols, ff_preset_name)
+        grid = _ff_to_grid(args.rows, args.cols)
     elif args.rule.lower() == "sandpile":
         # Abelian Sandpile self-organized criticality
         sp_preset_name = args.sandpile_preset
