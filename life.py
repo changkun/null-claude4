@@ -2624,6 +2624,550 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         time.sleep(delay)
 
 
+# --- Genetic Algorithm Rule Discovery ---
+
+import random as _random
+
+
+class GeneticRuleDiscovery:
+    """Evolves interesting cellular automaton rulesets using a genetic algorithm.
+
+    Maintains a population of candidate B/S rulesets, runs short simulations of
+    each, scores them on a fitness function that rewards sustained complexity,
+    and iteratively selects, crosses over, and mutates the best candidates.
+    """
+
+    def __init__(self, pop_size=60, grid_rows=40, grid_cols=60,
+                 sim_generations=200, elite_count=6, mutation_rate=0.15,
+                 seed_density=0.35):
+        self.pop_size = pop_size
+        self.grid_rows = grid_rows
+        self.grid_cols = grid_cols
+        self.sim_generations = sim_generations
+        self.elite_count = elite_count
+        self.mutation_rate = mutation_rate
+        self.seed_density = seed_density
+        self.population = []       # list of {"b": set, "s": set}
+        self.fitness_scores = []   # parallel list of floats
+        self.generation = 0
+        self.best_ever = []        # top rules across all generations
+        self._init_population()
+
+    def _init_population(self):
+        """Seed the initial population with random rulesets."""
+        self.population = []
+        for _ in range(self.pop_size):
+            self.population.append(self._random_rule())
+
+    def _random_rule(self):
+        """Generate a random B/S ruleset."""
+        birth = set()
+        survival = set()
+        # Birth conditions: pick from 1-8 (0 neighbours birth is degenerate)
+        for n in range(1, 9):
+            if _random.random() < 0.25:
+                birth.add(n)
+        # Survival conditions: pick from 0-8
+        for n in range(9):
+            if _random.random() < 0.3:
+                survival.add(n)
+        # Ensure at least one birth condition
+        if not birth:
+            birth.add(_random.randint(1, 8))
+        return {"b": birth, "s": survival}
+
+    def _make_seed_grid(self):
+        """Create a deterministic random grid for fair fitness comparison."""
+        grid = make_grid(self.grid_rows, self.grid_cols)
+        for r in range(self.grid_rows):
+            for c in range(self.grid_cols):
+                if _random.random() < self.seed_density:
+                    grid[r][c] = 1
+        return grid
+
+    def evaluate_fitness(self, rule):
+        """Run a short simulation and score the ruleset on complexity metrics.
+
+        Fitness rewards:
+        - Sustained moderate population (not extinct, not exploding)
+        - Population oscillation (sign of interesting dynamics)
+        - Diversity of population levels over time
+        - Longevity (not dying out quickly)
+
+        Fitness penalties:
+        - Rapid extinction (population drops to 0)
+        - Unbounded growth (population fills the grid)
+        - Static population (frozen / boring)
+        """
+        total_cells = self.grid_rows * self.grid_cols
+        full_rule = {"b": rule["b"], "s": rule["s"], "name": "candidate"}
+        grid = self._make_seed_grid()
+
+        pop_history = []
+        for gen in range(self.sim_generations):
+            pop = _count_population(grid)
+            pop_history.append(pop)
+            # Early termination: extinction
+            if pop == 0:
+                break
+            # Early termination: total saturation
+            if pop >= total_cells * 0.95:
+                break
+            grid = step(grid, full_rule)
+
+        if not pop_history:
+            return 0.0
+
+        # --- Scoring components ---
+        final_pop = pop_history[-1]
+        generations_survived = len(pop_history)
+        avg_pop = sum(pop_history) / len(pop_history)
+        density = avg_pop / total_cells
+
+        # 1. Longevity score: reward surviving many generations
+        longevity = generations_survived / self.sim_generations
+
+        # 2. Population balance: reward moderate density (peak around 0.15-0.40)
+        if density < 0.01:
+            balance = density * 10  # very sparse — low score
+        elif density > 0.80:
+            balance = max(0, 1.0 - (density - 0.80) * 5)  # too dense
+        else:
+            # Bell curve centered around 0.25
+            balance = math.exp(-((density - 0.25) ** 2) / (2 * 0.12 ** 2))
+
+        # 3. Oscillation: reward population variance (sign of dynamics)
+        if len(pop_history) > 10:
+            mean_pop = avg_pop
+            variance = sum((p - mean_pop) ** 2 for p in pop_history) / len(pop_history)
+            std_dev = math.sqrt(variance)
+            # Normalize by mean to get coefficient of variation
+            cv = std_dev / max(mean_pop, 1)
+            oscillation = min(cv * 3, 1.0)  # cap at 1.0
+        else:
+            oscillation = 0.0
+
+        # 4. Activity: reward changes between consecutive generations
+        if len(pop_history) > 1:
+            changes = sum(1 for i in range(1, len(pop_history))
+                          if pop_history[i] != pop_history[i - 1])
+            activity = changes / (len(pop_history) - 1)
+        else:
+            activity = 0.0
+
+        # 5. Non-extinction bonus
+        alive_bonus = 1.0 if final_pop > 0 else 0.0
+
+        # 6. Diversity: number of distinct population levels
+        unique_pops = len(set(pop_history))
+        diversity = min(unique_pops / 50.0, 1.0)
+
+        # Weighted combination
+        fitness = (
+            longevity * 0.20 +
+            balance * 0.25 +
+            oscillation * 0.20 +
+            activity * 0.15 +
+            alive_bonus * 0.10 +
+            diversity * 0.10
+        )
+        return fitness
+
+    def evaluate_all(self):
+        """Evaluate fitness for the entire population."""
+        # Use the same seed grid for all candidates in this generation
+        seed_state = _random.getstate()
+        self.fitness_scores = []
+        for rule in self.population:
+            _random.setstate(seed_state)
+            score = self.evaluate_fitness(rule)
+            self.fitness_scores.append(score)
+
+    def select_parent(self, ranked):
+        """Tournament selection: pick 3 random candidates, return the best."""
+        contestants = _random.sample(ranked, min(3, len(ranked)))
+        return max(contestants, key=lambda x: x[1])[0]
+
+    def crossover(self, parent_a, parent_b):
+        """Uniform crossover of birth/survival conditions."""
+        child_b = set()
+        child_s = set()
+        for n in range(9):
+            # Birth
+            if n in parent_a["b"] and n in parent_b["b"]:
+                child_b.add(n)
+            elif n in parent_a["b"] or n in parent_b["b"]:
+                if _random.random() < 0.5:
+                    child_b.add(n)
+            # Survival
+            if n in parent_a["s"] and n in parent_b["s"]:
+                child_s.add(n)
+            elif n in parent_a["s"] or n in parent_b["s"]:
+                if _random.random() < 0.5:
+                    child_s.add(n)
+        if not child_b:
+            child_b.add(_random.randint(1, 8))
+        return {"b": child_b, "s": child_s}
+
+    def mutate(self, rule):
+        """Flip random birth/survival bits."""
+        new_b = set(rule["b"])
+        new_s = set(rule["s"])
+        for n in range(1, 9):
+            if _random.random() < self.mutation_rate:
+                new_b.symmetric_difference_update({n})
+        for n in range(9):
+            if _random.random() < self.mutation_rate:
+                new_s.symmetric_difference_update({n})
+        if not new_b:
+            new_b.add(_random.randint(1, 8))
+        return {"b": new_b, "s": new_s}
+
+    def evolve_one_generation(self):
+        """Run one generation of the GA: evaluate, select, crossover, mutate."""
+        self.evaluate_all()
+
+        # Rank population by fitness
+        ranked = list(zip(self.population, self.fitness_scores))
+        ranked.sort(key=lambda x: x[1], reverse=True)
+
+        # Track best-ever rules
+        for rule, score in ranked[:3]:
+            rule_str = _rule_to_str(rule)
+            existing = {_rule_to_str(r): s for r, s in self.best_ever}
+            if rule_str not in existing or existing[rule_str] < score:
+                self.best_ever = [(r, s) for r, s in self.best_ever
+                                  if _rule_to_str(r) != rule_str]
+                self.best_ever.append((dict(rule), score))
+        self.best_ever.sort(key=lambda x: x[1], reverse=True)
+        self.best_ever = self.best_ever[:20]  # keep top 20 all-time
+
+        # Elitism: keep top performers unchanged
+        new_population = [dict(r) for r, _ in ranked[:self.elite_count]]
+
+        # Fill rest with offspring
+        while len(new_population) < self.pop_size:
+            parent_a = self.select_parent(ranked)
+            parent_b = self.select_parent(ranked)
+            child = self.crossover(parent_a, parent_b)
+            child = self.mutate(child)
+            new_population.append(child)
+
+        self.population = new_population
+        self.generation += 1
+
+    def get_top_rules(self, n=10):
+        """Return the top n rules from the all-time best list."""
+        return self.best_ever[:n]
+
+
+def _rule_to_str(rule):
+    """Convert a rule dict to B/S notation string."""
+    b_str = "".join(str(n) for n in sorted(rule["b"]))
+    s_str = "".join(str(n) for n in sorted(rule["s"]))
+    return f"B{b_str}/S{s_str}"
+
+
+def run_discovery(stdscr, rows, cols, ga_generations=50, pop_size=60,
+                  sim_generations=200):
+    """Curses UI for the genetic algorithm rule discovery mode."""
+    curses.curs_set(0)
+    stdscr.nodelay(False)
+    curses.start_color()
+    curses.use_default_colors()
+    curses.init_pair(1, curses.COLOR_GREEN, -1)
+    curses.init_pair(2, curses.COLOR_WHITE, -1)
+    curses.init_pair(3, curses.COLOR_CYAN, -1)
+    curses.init_pair(4, curses.COLOR_YELLOW, -1)
+    curses.init_pair(5, curses.COLOR_MAGENTA, -1)
+    curses.init_pair(6, curses.COLOR_BLACK, curses.COLOR_GREEN)
+    curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_CYAN)
+    curses.init_pair(8, curses.COLOR_BLUE, -1)
+    curses.init_pair(9, curses.COLOR_RED, -1)
+
+    ga = GeneticRuleDiscovery(
+        pop_size=pop_size,
+        grid_rows=rows,
+        grid_cols=cols,
+        sim_generations=sim_generations,
+    )
+
+    phase = "evolving"   # "evolving" or "results"
+    selected_idx = 0
+    preview_grid = None
+    preview_gen = 0
+    preview_running = False
+
+    def draw_evolving(ga_gen, best_score, best_rule, progress):
+        """Draw the evolution progress screen."""
+        stdscr.erase()
+        max_y, max_x = stdscr.getmaxyx()
+
+        title = "GENETIC RULE DISCOVERY"
+        try:
+            stdscr.addstr(0, max(0, (max_x - len(title)) // 2), title,
+                          curses.A_BOLD | curses.color_pair(4))
+        except curses.error:
+            pass
+
+        info_lines = [
+            f"GA Generation: {ga_gen}/{ga_generations}",
+            f"Population: {pop_size} candidates",
+            f"Simulation depth: {sim_generations} steps each",
+            "",
+            f"Evaluating candidate {progress}/{pop_size}..." if progress > 0 else "Starting evaluation...",
+            "",
+        ]
+        for i, line in enumerate(info_lines):
+            try:
+                stdscr.addstr(2 + i, 2, line, curses.color_pair(2))
+            except curses.error:
+                pass
+
+        # Progress bar
+        bar_y = 2 + len(info_lines)
+        bar_width = min(max_x - 6, 50)
+        if ga_generations > 0:
+            pct = ga_gen / ga_generations
+        else:
+            pct = 0
+        filled = int(bar_width * pct)
+        bar = "[" + "#" * filled + "-" * (bar_width - filled) + "]"
+        try:
+            stdscr.addstr(bar_y, 2, bar, curses.color_pair(1))
+            stdscr.addstr(bar_y, bar_width + 4, f"{pct * 100:.0f}%",
+                          curses.color_pair(1))
+        except curses.error:
+            pass
+
+        # Best rule so far
+        if best_rule:
+            try:
+                stdscr.addstr(bar_y + 2, 2, "Best rule so far:",
+                              curses.A_BOLD | curses.color_pair(3))
+                stdscr.addstr(bar_y + 3, 4,
+                              f"{_rule_to_str(best_rule)}  (fitness: {best_score:.4f})",
+                              curses.color_pair(4))
+            except curses.error:
+                pass
+
+        # Top rules leaderboard
+        top = ga.get_top_rules(8)
+        if top:
+            lb_y = bar_y + 5
+            try:
+                stdscr.addstr(lb_y, 2, "Leaderboard:",
+                              curses.A_BOLD | curses.color_pair(3))
+            except curses.error:
+                pass
+            for i, (rule, score) in enumerate(top):
+                if lb_y + 1 + i >= max_y - 1:
+                    break
+                try:
+                    stdscr.addstr(lb_y + 1 + i, 4,
+                                  f"{i + 1:2d}. {_rule_to_str(rule):20s}  fitness: {score:.4f}",
+                                  curses.color_pair(2))
+                except curses.error:
+                    pass
+
+        try:
+            stdscr.addstr(max_y - 1, 2, "Press 'q' to skip to results  |  Esc to quit",
+                          curses.color_pair(5))
+        except curses.error:
+            pass
+        stdscr.refresh()
+
+    def draw_results():
+        """Draw the results exploration screen."""
+        stdscr.erase()
+        max_y, max_x = stdscr.getmaxyx()
+        top = ga.get_top_rules(20)
+        if not top:
+            try:
+                stdscr.addstr(1, 2, "No rules discovered.", curses.color_pair(9))
+            except curses.error:
+                pass
+            stdscr.refresh()
+            return
+
+        title = "DISCOVERED RULES — Select one to explore"
+        try:
+            stdscr.addstr(0, max(0, (max_x - len(title)) // 2), title,
+                          curses.A_BOLD | curses.color_pair(4))
+        except curses.error:
+            pass
+
+        # Left panel: rule list
+        list_width = 42
+        for i, (rule, score) in enumerate(top):
+            if 2 + i >= max_y - 2:
+                break
+            rule_str = f"{i + 1:2d}. {_rule_to_str(rule):20s} fit: {score:.4f}"
+            if i == selected_idx:
+                attr = curses.A_BOLD | curses.color_pair(6)
+            else:
+                attr = curses.color_pair(2)
+            try:
+                stdscr.addstr(2 + i, 2, rule_str.ljust(list_width), attr)
+            except curses.error:
+                pass
+
+        # Right panel: mini preview of selected rule
+        if preview_grid is not None:
+            prev_x = list_width + 5
+            prev_max_w = max_x - prev_x - 1
+            prev_max_h = max_y - 4
+            try:
+                sel_rule = top[selected_idx][0]
+                stdscr.addstr(1, prev_x, f"Preview: {_rule_to_str(sel_rule)}  gen={preview_gen}",
+                              curses.A_BOLD | curses.color_pair(3))
+            except curses.error:
+                pass
+
+            for r in range(min(len(preview_grid), prev_max_h)):
+                row_str = ""
+                for c in range(min(len(preview_grid[0]), prev_max_w)):
+                    row_str += "\u2588" if preview_grid[r][c] else " "
+                try:
+                    if preview_grid[r]:
+                        cp = curses.color_pair(1)
+                    else:
+                        cp = curses.color_pair(2)
+                    stdscr.addstr(3 + r, prev_x, row_str, curses.color_pair(1))
+                except curses.error:
+                    pass
+
+        # Footer
+        footer = "UP/DOWN: select | ENTER: launch in simulator | SPACE: play/pause preview | q/Esc: quit"
+        try:
+            stdscr.addstr(max_y - 1, 2, footer[:max_x - 4], curses.color_pair(5))
+        except curses.error:
+            pass
+
+        stdscr.refresh()
+
+    def init_preview():
+        nonlocal preview_grid, preview_gen, preview_running
+        _random.seed(42)  # deterministic seed for previews
+        preview_grid = ga._make_seed_grid()
+        preview_gen = 0
+        preview_running = True
+
+    def step_preview():
+        nonlocal preview_grid, preview_gen
+        top = ga.get_top_rules(20)
+        if not top or selected_idx >= len(top):
+            return
+        rule = top[selected_idx][0]
+        full_rule = {"b": rule["b"], "s": rule["s"], "name": "preview"}
+        pop = _count_population(preview_grid)
+        if pop > 0:
+            preview_grid = step(preview_grid, full_rule)
+            preview_gen += 1
+
+    # --- Evolution phase ---
+    stdscr.nodelay(True)
+    stdscr.timeout(0)
+
+    for ga_gen in range(ga_generations):
+        # Evaluate with progress updates
+        seed_state = _random.getstate()
+        ga.fitness_scores = []
+        best_score = ga.best_ever[0][1] if ga.best_ever else 0.0
+        best_rule = ga.best_ever[0][0] if ga.best_ever else None
+
+        for i, rule in enumerate(ga.population):
+            _random.setstate(seed_state)
+            score = ga.evaluate_fitness(rule)
+            ga.fitness_scores.append(score)
+
+            # Update display every 5 candidates
+            if i % 5 == 0:
+                draw_evolving(ga_gen, best_score, best_rule, i + 1)
+                key = stdscr.getch()
+                if key == ord('q'):
+                    # Skip to results
+                    ga.evaluate_all()
+                    ga.evolve_one_generation()
+                    phase = "results"
+                    break
+                elif key == 27:  # Esc
+                    return None
+
+        if phase == "results":
+            break
+
+        # Rank and evolve
+        ranked = list(zip(ga.population, ga.fitness_scores))
+        ranked.sort(key=lambda x: x[1], reverse=True)
+
+        # Track best-ever
+        for rule, score in ranked[:3]:
+            rule_str = _rule_to_str(rule)
+            existing = {_rule_to_str(r): s for r, s in ga.best_ever}
+            if rule_str not in existing or existing[rule_str] < score:
+                ga.best_ever = [(r, s) for r, s in ga.best_ever
+                                if _rule_to_str(r) != rule_str]
+                ga.best_ever.append((dict(rule), score))
+        ga.best_ever.sort(key=lambda x: x[1], reverse=True)
+        ga.best_ever = ga.best_ever[:20]
+
+        # Selection, crossover, mutation
+        new_population = [dict(r) for r, _ in ranked[:ga.elite_count]]
+        while len(new_population) < ga.pop_size:
+            parent_a = ga.select_parent(ranked)
+            parent_b = ga.select_parent(ranked)
+            child = ga.crossover(parent_a, parent_b)
+            child = ga.mutate(child)
+            new_population.append(child)
+        ga.population = new_population
+        ga.generation += 1
+
+        draw_evolving(ga_gen + 1, best_score, best_rule, pop_size)
+
+    # --- Results phase ---
+    phase = "results"
+    init_preview()
+    stdscr.timeout(80)  # ~12 fps for preview animation
+
+    while True:
+        draw_results()
+        top = ga.get_top_rules(20)
+        if not top:
+            stdscr.timeout(-1)
+            stdscr.getch()
+            return None
+
+        if preview_running:
+            step_preview()
+
+        key = stdscr.getch()
+        if key == -1:
+            continue
+        elif key == curses.KEY_UP:
+            selected_idx = max(0, selected_idx - 1)
+            init_preview()
+        elif key == curses.KEY_DOWN:
+            selected_idx = min(len(top) - 1, selected_idx + 1)
+            init_preview()
+        elif key == ord(' '):
+            preview_running = not preview_running
+            if preview_running and preview_gen == 0:
+                init_preview()
+        elif key == ord('r'):
+            init_preview()
+        elif key in (curses.KEY_ENTER, 10, 13):
+            # Return the selected rule for interactive exploration
+            sel_rule = top[selected_idx][0]
+            return {
+                "b": sel_rule["b"],
+                "s": sel_rule["s"],
+                "name": f"Discovered ({_rule_to_str(sel_rule)})",
+            }
+        elif key in (ord('q'), 27):
+            return None
+
+
 def main():
     parser = argparse.ArgumentParser(description="Cellular automaton simulator in the terminal")
     parser.add_argument("--rows", type=int, default=40, help="Grid height (default: 40)")
@@ -2668,7 +3212,58 @@ def main():
         metavar="PATH",
         help="Run a Lua-like Python script on startup (path or name from ~/.life-scripts/)",
     )
+    parser.add_argument(
+        "--discover",
+        action="store_true",
+        default=False,
+        help="Launch genetic algorithm rule discovery mode to evolve interesting rulesets",
+    )
+    parser.add_argument(
+        "--ga-generations",
+        type=int,
+        default=50,
+        metavar="N",
+        help="Number of GA generations to run in discovery mode (default: 50)",
+    )
+    parser.add_argument(
+        "--ga-pop-size",
+        type=int,
+        default=60,
+        metavar="N",
+        help="GA population size in discovery mode (default: 60)",
+    )
+    parser.add_argument(
+        "--ga-sim-depth",
+        type=int,
+        default=200,
+        metavar="N",
+        help="Simulation steps per candidate in discovery mode (default: 200)",
+    )
     args = parser.parse_args()
+
+    # Discovery mode: run genetic algorithm to find interesting rules
+    if args.discover:
+        def _run_discovery(stdscr):
+            return run_discovery(
+                stdscr, args.rows, args.cols,
+                ga_generations=args.ga_generations,
+                pop_size=args.ga_pop_size,
+                sim_generations=args.ga_sim_depth,
+            )
+
+        discovered_rule = curses.wrapper(_run_discovery)
+        if discovered_rule is None:
+            return
+        # User selected a rule — launch the normal simulator with it
+        rule = discovered_rule
+        grid = make_grid(args.rows, args.cols)
+        place_pattern(grid, "random")
+        script_engine = ScriptEngine()
+        try:
+            curses.wrapper(lambda stdscr: run(stdscr, grid, args.speed, rule, None, script_engine))
+        finally:
+            pass
+        return
 
     # Resolve rule
     if args.rule.lower() in RULES:

@@ -18,6 +18,8 @@ python3 life.py --rule B2/S                        # custom rule via B/S notatio
 python3 life.py --rule wireworld                   # Wireworld 4-state automaton
 python3 life.py --script probabilistic_life        # run a user script on startup
 python3 life.py --script ~/my_script.py            # run a script from a file path
+python3 life.py --discover                         # evolve interesting rulesets via GA
+python3 life.py --discover --ga-generations 100    # more generations for deeper search
 ```
 
 ### Options
@@ -31,6 +33,10 @@ python3 life.py --script ~/my_script.py            # run a script from a file pa
 | `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
 | `--rule`    | `life`    | Rule preset, `wireworld`, or B/S notation (e.g. `B36/S23`) |
 | `--script`  | —         | Run a Python script on startup (path or name from `~/.life-scripts/`) |
+| `--discover` | off      | Launch genetic algorithm rule discovery mode |
+| `--ga-generations` | 50 | Number of GA generations in discovery mode |
+| `--ga-pop-size` | 60    | Population size per GA generation |
+| `--ga-sim-depth` | 200  | Simulation steps per candidate evaluation |
 
 ### Controls
 
@@ -310,6 +316,45 @@ Both backends produce identical results — same toroidal wrapping, same cell ag
 ```bash
 pip install numpy scipy
 ```
+
+## Genetic Algorithm Rule Discovery
+
+The `--discover` flag launches an evolutionary search that automatically finds interesting cellular automaton rulesets. Instead of manually trying B/S combinations, the GA breeds a population of candidate rules, simulates each one, scores them on a multi-factor fitness function, and iteratively selects the best for crossover and mutation.
+
+```bash
+python3 life.py --discover                                    # default settings
+python3 life.py --discover --ga-generations 100 --ga-pop-size 80   # deeper search
+```
+
+### How it works
+
+1. **Population seeding** — starts with random B/S rulesets (random birth conditions from 1–8, survival from 0–8).
+2. **Fitness evaluation** — each candidate runs a short simulation on a random grid. The fitness function scores six weighted metrics:
+   - **Population balance** (25%) — Gaussian reward peaked at 25% density, penalizing both extinction and explosion.
+   - **Oscillation** (20%) — coefficient of variation in population over time, rewarding dynamic behavior.
+   - **Longevity** (20%) — fraction of the simulation the rule survived.
+   - **Activity** (15%) — fraction of generations where the population changed.
+   - **Survival bonus** (10%) — binary reward for not going extinct.
+   - **Diversity** (10%) — number of distinct population levels observed.
+3. **Selection** — tournament selection (pick 3, keep the best) for parent choice.
+4. **Crossover** — uniform crossover of birth/survival condition bits between two parents.
+5. **Mutation** — bit-flip at 15% rate per condition.
+6. **Elitism** — top 6 candidates survive unchanged into the next generation.
+
+### Discovery UI
+
+The curses interface has two phases:
+
+- **Evolution phase** — progress bar, current generation, best rule found so far, and a live leaderboard of top rules. Press `q` to skip ahead to results, `Esc` to quit.
+- **Results phase** — scrollable list of the top 20 discovered rules with fitness scores and a live mini-preview animation of the selected rule. Press `Enter` to launch any rule directly in the full simulator.
+
+| Key       | Action (results phase)            |
+|-----------|-----------------------------------|
+| `Up/Down` | Navigate rule list                |
+| `Enter`   | Launch selected rule in simulator |
+| `Space`   | Play/pause preview animation      |
+| `r`       | Restart preview                   |
+| `q`/`Esc` | Quit                              |
 
 ## Design Notes
 
