@@ -384,6 +384,12 @@ def run(stdscr, grid, speed, rule=None):
     delay = speed
     pop_history = []
     max_pop_history = 500  # Rolling window of population data
+
+    # Time-travel history
+    history = [copy.deepcopy(grid)]  # history[0] = initial state
+    hist_idx = 0                     # current position in history
+    max_history = 10000              # max stored generations
+    browsing_history = False         # True when viewing a past state
     # Find current rule index for cycling
     rule_idx = -1
     for i, name in enumerate(RULE_NAMES):
@@ -394,9 +400,10 @@ def run(stdscr, grid, speed, rule=None):
     while True:
         # Track population
         pop = _count_population(grid)
-        pop_history.append(pop)
-        if len(pop_history) > max_pop_history:
-            pop_history.pop(0)
+        if not browsing_history:
+            pop_history.append(pop)
+            if len(pop_history) > max_pop_history:
+                pop_history.pop(0)
 
         stdscr.erase()
         max_y, max_x = stdscr.getmaxyx()
@@ -431,11 +438,15 @@ def run(stdscr, grid, speed, rule=None):
 
         # Status bar
         rule_label = rule.get("name", "Custom")
+        hist_str = ""
+        if browsing_history:
+            hist_str = f" | HISTORY {hist_idx}/{len(history)-1}"
         if editing:
             status = f" EDITOR ({cursor_r},{cursor_c}) | Gen {generation} | {rule_label} | [arrows]move [enter/space]toggle [s]ave [l]oad [c]lear [R]ule [e]exit editor [q]uit"
         else:
             pop_str = f" | Pop {pop}" if not show_stats else ""
-            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {'PAUSED' if paused else 'Running'}{pop_str} | [space]pause [e]dit [g]raph [+/-]speed [r]andom [R]ule [n]ext [q]uit"
+            state_str = 'REWOUND' if browsing_history else ('PAUSED' if paused else 'Running')
+            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str} | [space]pause [e]dit [g]raph [+/-]speed [r]andom [R]ule [n]ext [[][]]scrub [b]eginning [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
@@ -465,6 +476,10 @@ def run(stdscr, grid, speed, rule=None):
                     for c2 in range(cols):
                         grid[r2][c2] = 0
                 generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
             elif key == ord("s"):
                 max_y, max_x = stdscr.getmaxyx()
                 name = curses_input(stdscr, "Save as (name, no ext): ", max_y, max_x)
@@ -505,6 +520,10 @@ def run(stdscr, grid, speed, rule=None):
                             filepath = os.path.join(CELLS_DIR, patterns[sel])
                             grid = load_cells(filepath, rows, cols)
                             generation = 0
+                            history = [copy.deepcopy(grid)]
+                            hist_idx = 0
+                            browsing_history = False
+                            pop_history = []
                             picking = False
                         elif pk == 27:
                             picking = False
@@ -515,6 +534,10 @@ def run(stdscr, grid, speed, rule=None):
                     if path and os.path.isfile(path):
                         grid = load_cells(path, rows, cols)
                         generation = 0
+                        history = [copy.deepcopy(grid)]
+                        hist_idx = 0
+                        browsing_history = False
+                        pop_history = []
             elif key == ord("R"):
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
@@ -528,7 +551,7 @@ def run(stdscr, grid, speed, rule=None):
                 editing = False
         else:
             # Normal-mode controls
-            if key == ord(" "):
+            if key == ord(" ") and not browsing_history:
                 paused = not paused
             elif key == ord("+") or key == ord("="):
                 delay = max(0.01, delay - 0.05)
@@ -540,6 +563,10 @@ def run(stdscr, grid, speed, rule=None):
                     for c2 in range(cols):
                         grid[r2][c2] = random.randint(0, 1)
                 generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
             elif key == ord("R"):
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
@@ -547,18 +574,69 @@ def run(stdscr, grid, speed, rule=None):
                 else:
                     rule_idx = 0
                     rule = RULES[RULE_NAMES[0]]
-            elif key == ord("n") and paused:
+            elif key == ord("n") and (paused or browsing_history):
+                # Single-step forward: fork from current point if browsing
+                if browsing_history:
+                    # Fork: discard future, resume from this point
+                    del history[hist_idx + 1:]
+                    grid = copy.deepcopy(history[hist_idx])
+                    browsing_history = False
+                    pop_history = [_count_population(h) for h in history[-max_pop_history:]]
                 grid = step(grid, rule)
                 generation += 1
+                history.append(copy.deepcopy(grid))
+                hist_idx = len(history) - 1
+                if len(history) > max_history:
+                    history.pop(0)
+                    hist_idx -= 1
+            elif key == ord("["):
+                # Rewind one generation
+                if hist_idx > 0:
+                    if not browsing_history:
+                        browsing_history = True
+                        paused = True
+                    hist_idx -= 1
+                    grid = copy.deepcopy(history[hist_idx])
+                    generation = hist_idx
+            elif key == ord("]"):
+                # Forward one generation in history
+                if browsing_history and hist_idx < len(history) - 1:
+                    hist_idx += 1
+                    grid = copy.deepcopy(history[hist_idx])
+                    generation = hist_idx
+                    if hist_idx == len(history) - 1:
+                        browsing_history = False
+            elif key == ord("b"):
+                # Jump to beginning of history
+                if len(history) > 1:
+                    browsing_history = True
+                    paused = True
+                    hist_idx = 0
+                    grid = copy.deepcopy(history[hist_idx])
+                    generation = 0
             elif key == ord("g"):
                 show_stats = not show_stats
             elif key == ord("e"):
                 paused = True
                 editing = True
+            elif key == ord(" ") and browsing_history:
+                # Unpause from history: fork from current point
+                del history[hist_idx + 1:]
+                grid = copy.deepcopy(history[hist_idx])
+                generation = hist_idx
+                browsing_history = False
+                paused = False
+                # Rebuild pop_history up to this point
+                pop_history = [_count_population(h) for h in history[-max_pop_history:]]
 
-        if not paused and not editing:
+        if not paused and not editing and not browsing_history:
             grid = step(grid, rule)
             generation += 1
+            history.append(copy.deepcopy(grid))
+            hist_idx = len(history) - 1
+            if len(history) > max_history:
+                history.pop(0)
+                hist_idx -= 1
 
         time.sleep(delay)
 

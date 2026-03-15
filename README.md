@@ -39,6 +39,9 @@ python3 life.py --rule B2/S                        # custom rule via B/S notatio
 | `R`       | Cycle to next ruleset             |
 | `e`       | Enter editor mode (auto-pauses)   |
 | `g`       | Toggle population stats panel     |
+| `[`       | Rewind one generation (auto-pauses) |
+| `]`       | Forward one generation through history |
+| `b`       | Jump to beginning of recorded history |
 | `q`       | Quit                              |
 
 ### Editor Mode
@@ -93,6 +96,18 @@ Press `g` to toggle a 35-column side panel that provides real-time population an
 - **ASCII bar chart** — a scrolling sparkline using Unicode block characters (`▁▂▃▄▅▆▇█`) showing population over recent generations, auto-scaled to the data maximum
 
 Population history is kept in a rolling 500-generation buffer. When the panel is hidden, a compact `Pop N` count appears in the status bar. The grid drawing area shrinks automatically to make room for the panel when it's visible.
+
+## Time Travel
+
+The simulator records up to 10,000 generations of grid history, letting you rewind to any previous state and replay from there.
+
+- **Rewind** — press `[` to step backward one generation. The simulation auto-pauses and the status bar shows `REWOUND | HISTORY 42/300`.
+- **Forward** — press `]` to step forward through recorded history. When you reach the latest generation, browsing mode ends automatically.
+- **Jump to start** — press `b` to jump to the beginning of recorded history (auto-pauses).
+- **Fork and resume** — press `Space` while rewound to discard everything after the current point and resume running from there. Press `n` to single-step forward from the rewound point (also forks).
+- **History reset** — randomizing, clearing, or loading a pattern resets the history buffer.
+
+This pairs with the existing pause/step controls and the stats panel — you can rewind to an interesting moment, study the population graph, then fork and let the simulation evolve differently.
 
 ## Design Notes
 
