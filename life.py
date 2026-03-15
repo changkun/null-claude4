@@ -15,6 +15,15 @@ import struct
 import threading
 import time
 
+# --- Optional NumPy/SciPy for vectorized compute backend ---
+
+try:
+    import numpy as np
+    from scipy.signal import convolve2d
+    _HAS_NUMPY = True
+except ImportError:
+    _HAS_NUMPY = False
+
 # --- Rulesets (Birth/Survival notation) ---
 
 RULES = {
@@ -742,6 +751,40 @@ def place_pattern(grid, name, row_off=None, col_off=None):
 def step(grid, rule=None):
     if rule is None:
         rule = RULES["life"]
+    if _HAS_NUMPY:
+        return _step_numpy(grid, rule)
+    return _step_python(grid, rule)
+
+
+def _step_numpy(grid, rule):
+    """Vectorized backend using SciPy 2D convolution — O(1) per cell."""
+    birth, survival = rule["b"], rule["s"]
+    rows, cols = len(grid), len(grid[0])
+    # Build age array and binary alive mask
+    age = np.array(grid, dtype=np.int32)
+    alive = (age > 0).astype(np.int32)
+    # Neighbor kernel (Moore neighbourhood)
+    kernel = np.array([[1, 1, 1],
+                       [1, 0, 1],
+                       [1, 1, 1]], dtype=np.int32)
+    # Wrap boundary matches the toroidal topology of the Python engine
+    neighbors = convolve2d(alive, kernel, mode="same", boundary="wrap")
+    # Birth / survival masks
+    birth_mask = np.zeros(9, dtype=bool)
+    for b in birth:
+        birth_mask[b] = True
+    surv_mask = np.zeros(9, dtype=bool)
+    for s in survival:
+        surv_mask[s] = True
+    born = (~alive.astype(bool)) & birth_mask[neighbors]
+    survives = alive.astype(bool) & surv_mask[neighbors]
+    # New age grid: survivors increment age, newborns get age 1, rest 0
+    new_age = np.where(survives, age + 1, np.where(born, 1, 0))
+    return new_age.tolist()
+
+
+def _step_python(grid, rule):
+    """Original cell-by-cell backend — no dependencies required."""
     birth, survival = rule["b"], rule["s"]
     rows, cols = len(grid), len(grid[0])
     new = make_grid(rows, cols)
@@ -1628,7 +1671,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
             pop_str = f" | Pop {pop}" if not show_stats else ""
             state_str = 'REWOUND' if browsing_history else ('PAUSED' if paused else 'Running')
             detect_str = " | DETECT" if detect_enabled else ""
-            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{challenge_str}{script_str} | [space]pause [e]dit [g]raph [d]etect [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
+            engine_str = " | NumPy" if _HAS_NUMPY else ""
+            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
