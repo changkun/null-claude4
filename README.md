@@ -2,6 +2,8 @@
 
 A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, the **Ising Model** statistical mechanics spin simulation, the **Cyclic Cellular Automaton** (CCA) spiral wave generator, the **Chimera Grid** multi-rule coexistence mode, **Particle Life** emergent multi-species particle interactions, **Lattice Boltzmann** D2Q9 fluid dynamics, **Boids** flocking/swarming simulation, **Wave Function Collapse** (WFC) constraint-based procedural generation, the **2D Wave Equation** damped membrane simulation, **SPH Fluid** Lagrangian particle-based hydrodynamics, a **split-screen comparison mode** for watching two simulations side-by-side, a **demo reel** screensaver that auto-cycles through all modes, and supports arbitrary rules via B/S notation.
 
+For the scientific background, mathematical foundations, and literature references behind each simulation mode, see [GUIDE.md](GUIDE.md).
+
 ## Usage
 
 ```bash
@@ -140,7 +142,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `B`       | Toggle Braille high-density rendering |
 | `T`       | Cycle topology (Torus → Klein Bottle → Möbius Strip → Bounded) |
 | `H`       | Toggle HashLife hyperspeed mode   |
-| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode; cycle Physarum presets in Physarum mode; cycle Sandpile presets in Sandpile mode; cycle DLA presets in DLA mode; cycle Forest Fire presets in Forest Fire mode; cycle Ising presets in Ising mode; cycle CCA presets in Cyclic CA mode; cycle Particle Life presets in Particle Life mode; cycle LBM Fluid presets in Fluid mode; cycle Boids presets in Boids mode; cycle Wave Equation presets in Wave mode; cycle SPH Fluid presets in SPH mode |
+| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode; cycle Physarum presets in Physarum mode; cycle Sandpile presets in Sandpile mode; cycle DLA presets in DLA mode; cycle Forest Fire presets in Forest Fire mode; cycle Ising presets in Ising mode; cycle CCA presets in Cyclic CA mode; cycle Particle Life presets in Particle Life mode; cycle LBM Fluid presets in Fluid mode; cycle Boids presets in Boids mode; cycle Wave Equation presets in Wave mode; cycle SPH Fluid presets in SPH mode; cycle Chimera presets in Chimera mode; cycle WFC presets in WFC mode |
 | `t` / `y` | Decrease / increase temperature in Ising Model mode |
 | `W`       | Enter a specific Wolfram rule number (0–255) in Elementary CA mode |
 | `G`       | Export history as animated GIF    |
@@ -229,6 +231,11 @@ All rules use Birth/Survival notation — a cell is born if it has exactly B nei
 | `fallingsand` | *(particle physics)* | Gravity-driven sandbox — see [Falling Sand](#falling-sand-particle-simulation) below |
 | `physarum`   | *(chemotaxis)* | Slime mold transport networks — see [Physarum](#physarum-slime-mold-transport-network) below |
 | `sandpile`   | *(self-organized criticality)* | Abelian Sandpile — see [Sandpile](#abelian-sandpile) below |
+| `dla`        | *(fractal growth)* | Diffusion-limited aggregation — see [DLA](#diffusion-limited-aggregation-dla) below |
+| `forestfire` | *(probabilistic CA)* | Stochastic forest fire — see [Forest Fire](#forest-fire-model) below |
+| `ising`      | *(statistical mechanics)* | Magnetic spin simulation — see [Ising Model](#ising-model--statistical-mechanics-spin-simulation) below |
+| `cca`        | *(cyclic automaton)* | Spiral wave generator — see [Cyclic CA](#cyclic-cellular-automata) below |
+| `wfc`        | *(constraint-based)* | Procedural generation — see [WFC](#wave-function-collapse-wfc--procedural-generation) below |
 | `chimera`    | *(multi-rule zones)* | Multiple B/S rules on one grid — see [Chimera Grid](#chimera-grid--multi-rule-coexistence) below |
 | `particlelife` | *(continuous particles)* | Multi-species particle interactions — see [Particle Life](#particle-life--primordial-soup) below |
 | `fluid`        | *(lattice Boltzmann)* | D2Q9 fluid dynamics — see [LBM Fluid Dynamics](#lbm-fluid-dynamics--lattice-boltzmann-method) below |

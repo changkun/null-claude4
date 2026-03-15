@@ -8971,6 +8971,37 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 elif wave:
                     _wave_init(rows, cols)
                     grid = _wave_to_grid(rows, cols)
+                elif lenia:
+                    preset = LENIA_PRESETS[LENIA_PRESET_NAMES[_lenia_preset_idx]]
+                    _lenia_init(rows, cols, preset.get("seed", "orbium"))
+                    grid = _lenia_to_grid(rows, cols)
+                elif turmite:
+                    _turmite_init(rows, cols)
+                    grid = _turmite_to_grid(rows, cols)
+                elif fallingsand:
+                    _fs_init(rows, cols)
+                    grid = _fs_to_grid(rows, cols)
+                elif sandpile:
+                    _sp_init(rows, cols)
+                    grid = _sp_to_grid(rows, cols)
+                elif dla:
+                    _dla_init(rows, cols)
+                    grid = _dla_to_grid(rows, cols)
+                elif forestfire:
+                    _ff_init(rows, cols)
+                    grid = _ff_to_grid(rows, cols)
+                elif particlelife:
+                    _pl_init(rows, cols)
+                    grid = _pl_to_grid(rows, cols)
+                elif boids:
+                    _boids_init(rows, cols)
+                    grid = _boids_to_grid(rows, cols)
+                elif _is_wfc(rule):
+                    _wfc_init(rows, cols)
+                    grid = _wfc_to_grid(rows, cols)
+                elif sph:
+                    _sph_init(rows, cols)
+                    grid = _sph_to_grid(rows, cols)
                 else:
                     import random
                     for r2 in range(rows):
@@ -9619,6 +9650,28 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 rule["name"] = f"Boids ({BOIDS_PRESETS[preset_name]['name']})"
                 _boids_init(rows, cols, preset_name)
                 grid = _boids_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord("<") and _is_wfc(rule):
+                _wfc_preset_idx = (_wfc_preset_idx - 1) % len(WFC_PRESET_NAMES)
+                preset_name = WFC_PRESET_NAMES[_wfc_preset_idx]
+                rule["name"] = f"WFC ({WFC_PRESETS[preset_name]['name']})"
+                _wfc_init(rows, cols, preset_name)
+                grid = _wfc_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord(">") and _is_wfc(rule):
+                _wfc_preset_idx = (_wfc_preset_idx + 1) % len(WFC_PRESET_NAMES)
+                preset_name = WFC_PRESET_NAMES[_wfc_preset_idx]
+                rule["name"] = f"WFC ({WFC_PRESETS[preset_name]['name']})"
+                _wfc_init(rows, cols, preset_name)
+                grid = _wfc_to_grid(rows, cols)
                 generation = 0
                 history = [copy.deepcopy(grid)]
                 hist_idx = 0
