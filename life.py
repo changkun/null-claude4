@@ -1,11 +1,48 @@
 #!/usr/bin/env python3
-"""Terminal-based Conway's Game of Life simulator."""
+"""Terminal-based cellular automaton simulator with multiple rulesets."""
 
 import argparse
 import copy
 import curses
 import os
 import time
+
+# --- Rulesets (Birth/Survival notation) ---
+
+RULES = {
+    "life":      {"b": {3}, "s": {2, 3}, "name": "Conway's Life (B3/S23)"},
+    "highlife":  {"b": {3, 6}, "s": {2, 3}, "name": "HighLife (B36/S23)"},
+    "daynight":  {"b": {3, 6, 7, 8}, "s": {3, 4, 6, 7, 8}, "name": "Day & Night (B3678/S34678)"},
+    "seeds":     {"b": {2}, "s": set(), "name": "Seeds (B2/S)"},
+    "diamoeba":  {"b": {3, 5, 6, 7, 8}, "s": {5, 6, 7, 8}, "name": "Diamoeba (B35678/S5678)"},
+    "morley":    {"b": {3, 6, 8}, "s": {2, 4, 5}, "name": "Morley (B368/S245)"},
+    "2x2":       {"b": {3, 6}, "s": {1, 2, 5}, "name": "2x2 (B36/S125)"},
+    "maze":      {"b": {3}, "s": {1, 2, 3, 4, 5}, "name": "Maze (B3/S12345)"},
+}
+
+RULE_NAMES = list(RULES.keys())
+
+
+def parse_rule_string(rule_str):
+    """Parse a rule string like 'B36/S23' into birth/survival sets."""
+    rule_str = rule_str.upper().replace(" ", "")
+    if "/" in rule_str:
+        parts = rule_str.split("/")
+    else:
+        # Try Bx/Sy format without slash: B36S23
+        idx = rule_str.find("S")
+        if idx == -1:
+            raise ValueError(f"Invalid rule format: {rule_str}")
+        parts = [rule_str[:idx], rule_str[idx:]]
+    birth = set()
+    survival = set()
+    for part in parts:
+        if part.startswith("B"):
+            birth = {int(ch) for ch in part[1:] if ch.isdigit()}
+        elif part.startswith("S"):
+            survival = {int(ch) for ch in part[1:] if ch.isdigit()}
+    return {"b": birth, "s": survival, "name": rule_str}
+
 
 # --- Starter Patterns (relative coordinates) ---
 
@@ -171,16 +208,19 @@ def place_pattern(grid, name, row_off=None, col_off=None):
                 grid[nr][nc] = 1
 
 
-def step(grid):
+def step(grid, rule=None):
+    if rule is None:
+        rule = RULES["life"]
+    birth, survival = rule["b"], rule["s"]
     rows, cols = len(grid), len(grid[0])
     new = make_grid(rows, cols)
     for r in range(rows):
         for c in range(cols):
             n = _neighbours(grid, r, c, rows, cols)
             if grid[r][c]:
-                new[r][c] = (grid[r][c] + 1) if n in (2, 3) else 0
+                new[r][c] = (grid[r][c] + 1) if n in survival else 0
             else:
-                new[r][c] = 1 if n == 3 else 0
+                new[r][c] = 1 if n in birth else 0
     return new
 
 
@@ -207,7 +247,9 @@ def _age_color(age):
         return 7   # magenta — ancient
 
 
-def run(stdscr, grid, speed):
+def run(stdscr, grid, speed, rule=None):
+    if rule is None:
+        rule = RULES["life"]
     curses.curs_set(0)
     stdscr.nodelay(True)
     curses.start_color()
@@ -226,6 +268,12 @@ def run(stdscr, grid, speed):
     editing = False
     cursor_r, cursor_c = rows // 2, cols // 2
     delay = speed
+    # Find current rule index for cycling
+    rule_idx = -1
+    for i, name in enumerate(RULE_NAMES):
+        if RULES[name] is rule:
+            rule_idx = i
+            break
 
     while True:
         stdscr.erase()
@@ -248,10 +296,11 @@ def run(stdscr, grid, speed):
                     pass
 
         # Status bar
+        rule_label = rule.get("name", "Custom")
         if editing:
-            status = f" EDITOR ({cursor_r},{cursor_c}) | Gen {generation} | [arrows]move [enter/space]toggle [s]ave [l]oad [c]lear [e]exit editor [q]uit"
+            status = f" EDITOR ({cursor_r},{cursor_c}) | Gen {generation} | {rule_label} | [arrows]move [enter/space]toggle [s]ave [l]oad [c]lear [R]ule [e]exit editor [q]uit"
         else:
-            status = f" Gen {generation} | Delay {delay:.2f}s | {'PAUSED' if paused else 'Running'} | [space]pause [e]dit [+/-]speed [r]andom [n]ext [q]uit"
+            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {'PAUSED' if paused else 'Running'} | [space]pause [e]dit [+/-]speed [r]andom [R]ule [n]ext [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
@@ -331,6 +380,13 @@ def run(stdscr, grid, speed):
                     if path and os.path.isfile(path):
                         grid = load_cells(path, rows, cols)
                         generation = 0
+            elif key == ord("R"):
+                if rule_idx >= 0:
+                    rule_idx = (rule_idx + 1) % len(RULE_NAMES)
+                    rule = RULES[RULE_NAMES[rule_idx]]
+                else:
+                    rule_idx = 0
+                    rule = RULES[RULE_NAMES[0]]
             elif key == ord("e"):
                 editing = False
         else:
@@ -347,22 +403,29 @@ def run(stdscr, grid, speed):
                     for c2 in range(cols):
                         grid[r2][c2] = random.randint(0, 1)
                 generation = 0
+            elif key == ord("R"):
+                if rule_idx >= 0:
+                    rule_idx = (rule_idx + 1) % len(RULE_NAMES)
+                    rule = RULES[RULE_NAMES[rule_idx]]
+                else:
+                    rule_idx = 0
+                    rule = RULES[RULE_NAMES[0]]
             elif key == ord("n") and paused:
-                grid = step(grid)
+                grid = step(grid, rule)
                 generation += 1
             elif key == ord("e"):
                 paused = True
                 editing = True
 
         if not paused and not editing:
-            grid = step(grid)
+            grid = step(grid, rule)
             generation += 1
 
         time.sleep(delay)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Conway's Game of Life in the terminal")
+    parser = argparse.ArgumentParser(description="Cellular automaton simulator in the terminal")
     parser.add_argument("--rows", type=int, default=40, help="Grid height (default: 40)")
     parser.add_argument("--cols", type=int, default=80, help="Grid width (default: 80)")
     parser.add_argument("--speed", type=float, default=0.1, help="Delay between generations in seconds (default: 0.1)")
@@ -378,7 +441,22 @@ def main():
         default=None,
         help="Load a .cells file (path or name from ~/.life-patterns/)",
     )
+    parser.add_argument(
+        "--rule",
+        type=str,
+        default="life",
+        help="Rule preset (" + ", ".join(RULE_NAMES) + ") or B/S notation (e.g. B36/S23). Default: life",
+    )
     args = parser.parse_args()
+
+    # Resolve rule
+    if args.rule.lower() in RULES:
+        rule = RULES[args.rule.lower()]
+    else:
+        try:
+            rule = parse_rule_string(args.rule)
+        except ValueError as e:
+            parser.error(str(e))
 
     grid = make_grid(args.rows, args.cols)
     if args.load:
@@ -393,7 +471,7 @@ def main():
         grid = load_cells(path, args.rows, args.cols)
     else:
         place_pattern(grid, args.pattern)
-    curses.wrapper(lambda stdscr: run(stdscr, grid, args.speed))
+    curses.wrapper(lambda stdscr: run(stdscr, grid, args.speed, rule))
 
 
 if __name__ == "__main__":

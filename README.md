@@ -1,6 +1,6 @@
-# Conway's Game of Life — Terminal Simulator
+# Cellular Automaton — Terminal Simulator
 
-A single-file Python implementation of Conway's Game of Life that runs in the terminal using `curses`. No external dependencies.
+A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze) and supports arbitrary rules via B/S notation.
 
 ## Usage
 
@@ -12,6 +12,9 @@ python3 life.py --pattern random                   # random initial state
 python3 life.py --rows 60 --cols 120 --speed 0.2   # custom grid and speed
 python3 life.py --load spaceship                   # load a saved pattern by name
 python3 life.py --load ~/patterns/my.cells         # load from a file path
+python3 life.py --rule highlife --pattern random    # HighLife ruleset
+python3 life.py --rule daynight                    # Day & Night ruleset
+python3 life.py --rule B2/S                        # custom rule via B/S notation
 ```
 
 ### Options
@@ -23,6 +26,7 @@ python3 life.py --load ~/patterns/my.cells         # load from a file path
 | `--speed`   | 0.1       | Delay between generations (seconds)  |
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
 | `--load`    | —         | Load a `.cells` file (path or name from `~/.life-patterns/`) |
+| `--rule`    | `life`    | Rule preset or B/S notation (e.g. `B36/S23`) |
 
 ### Controls
 
@@ -32,6 +36,7 @@ python3 life.py --load ~/patterns/my.cells         # load from a file path
 | `+` / `-` | Speed up / slow down             |
 | `n`       | Step one generation (when paused) |
 | `r`       | Randomize the grid                |
+| `R`       | Cycle to next ruleset             |
 | `e`       | Enter editor mode (auto-pauses)   |
 | `q`       | Quit                              |
 
@@ -46,6 +51,7 @@ Press `e` to enter an interactive cell editor. The simulation pauses and a curso
 | `s`             | Save grid to a `.cells` file |
 | `l`             | Load a pattern (picker or path) |
 | `c`             | Clear the entire grid     |
+| `R`             | Cycle to next ruleset     |
 | `e`             | Exit editor, stay paused  |
 | `q`             | Quit                      |
 
@@ -56,6 +62,23 @@ Patterns are saved in the standard plaintext `.cells` format, compatible with fi
 - **Save from editor** — press `s`, type a name, and the current grid is exported with empty borders trimmed.
 - **Load from editor** — press `l` to browse saved patterns with an interactive picker (arrow keys + enter), or enter a file path if no patterns are saved yet.
 - **Load at startup** — use `--load <name-or-path>` to start with a pattern from your library or any `.cells` file.
+
+## Rulesets
+
+All rules use Birth/Survival notation — a cell is born if it has exactly B neighbors, and survives if it has exactly S neighbors.
+
+| Preset     | Rule       | Character |
+|------------|------------|-----------|
+| `life`     | B3/S23     | Classic Conway — gliders, oscillators, still lifes |
+| `highlife` | B36/S23    | Like Life but with replicators |
+| `daynight` | B3678/S34678 | Symmetric — dead/alive cells behave identically |
+| `seeds`    | B2/S       | Every cell dies each tick — explosive growth |
+| `diamoeba` | B35678/S5678 | Grows diamond-shaped amoeba blobs |
+| `morley`   | B368/S245  | Move — glider-rich rule |
+| `2x2`      | B36/S125   | Forms 2x2 blocks |
+| `maze`     | B3/S12345  | Generates maze-like corridors |
+
+Use `--rule <preset>` or `--rule B.../S...` for custom rules. Press `R` at runtime to cycle through presets.
 
 ## Design Notes
 
