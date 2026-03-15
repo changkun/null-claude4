@@ -45,6 +45,7 @@ RULES = {
     "fallingsand": {"b": set(), "s": set(), "name": "Falling Sand", "fallingsand": True},
     "physarum": {"b": set(), "s": set(), "name": "Physarum (dendritic)", "physarum": True},
     "sandpile": {"b": set(), "s": set(), "name": "Sandpile (single-source)", "sandpile": True},
+    "dla": {"b": set(), "s": set(), "name": "DLA (snowflake)", "dla": True},
 }
 
 RULE_NAMES = list(RULES.keys())
@@ -160,6 +161,11 @@ def _is_physarum(rule):
 def _is_sandpile(rule):
     """Check if the current rule is the Abelian Sandpile simulation."""
     return rule.get("sandpile", False)
+
+
+def _is_dla(rule):
+    """Check if the current rule is the Diffusion-Limited Aggregation simulation."""
+    return rule.get("dla", False)
 
 
 # --- Wa-Tor Predator-Prey Ecosystem ---
@@ -1734,6 +1740,200 @@ def _sp_color(val):
     return 21          # overflow (shouldn't occur) — red
 
 
+# --- Diffusion-Limited Aggregation (DLA) Fractal Growth ---
+# Random walkers diffuse through space and stick on contact with existing
+# structure, producing fractal dendrites — frost, mineral deposits, lightning.
+
+DLA_PRESETS = {
+    "snowflake": {
+        "name": "Snowflake",
+        "description": "Central seed grows radial fractal dendrites",
+        "seed": "center",
+        "walkers_per_step": 50,
+        "bias_x": 0.0,
+        "bias_y": 0.0,
+        "sticking_prob": 1.0,
+    },
+    "electrode": {
+        "name": "Electrode",
+        "description": "Bottom-edge seed line grows upward dendrites",
+        "seed": "bottom",
+        "walkers_per_step": 80,
+        "bias_x": 0.0,
+        "bias_y": 0.0,
+        "sticking_prob": 1.0,
+    },
+    "coral": {
+        "name": "Coral",
+        "description": "Multiple scattered seeds grow into each other",
+        "seed": "multi",
+        "walkers_per_step": 60,
+        "bias_x": 0.0,
+        "bias_y": 0.0,
+        "sticking_prob": 0.8,
+    },
+    "lightning": {
+        "name": "Lightning",
+        "description": "Top seed with downward bias creates bolt-like paths",
+        "seed": "top",
+        "walkers_per_step": 60,
+        "bias_x": 0.0,
+        "bias_y": 0.3,
+        "sticking_prob": 0.7,
+    },
+}
+DLA_PRESET_NAMES = list(DLA_PRESETS.keys())
+
+_dla_grid = None          # 2D grid: 0=empty, positive=aggregation order
+_dla_rows, _dla_cols = 0, 0
+_dla_preset_idx = 0
+_dla_walkers_per_step = 50
+_dla_bias_x = 0.0
+_dla_bias_y = 0.0
+_dla_sticking_prob = 1.0
+_dla_next_id = 1          # counter for aggregation order (used for coloring)
+_dla_occupied = None       # set of (r, c) for fast neighbor lookup
+
+
+def _dla_init(rows, cols, preset_name=None):
+    """Initialize the DLA grid with seed structure."""
+    global _dla_grid, _dla_rows, _dla_cols, _dla_walkers_per_step
+    global _dla_bias_x, _dla_bias_y, _dla_sticking_prob, _dla_next_id, _dla_occupied
+    _dla_rows, _dla_cols = rows, cols
+    if preset_name is None:
+        preset_name = DLA_PRESET_NAMES[_dla_preset_idx]
+    preset = DLA_PRESETS[preset_name]
+    _dla_walkers_per_step = preset["walkers_per_step"]
+    _dla_bias_x = preset["bias_x"]
+    _dla_bias_y = preset["bias_y"]
+    _dla_sticking_prob = preset["sticking_prob"]
+    _dla_next_id = 1
+    _dla_occupied = set()
+
+    _dla_grid = [[0] * cols for _ in range(rows)]
+
+    seed_type = preset["seed"]
+    if seed_type == "center":
+        cr, cc = rows // 2, cols // 2
+        _dla_grid[cr][cc] = 1
+        _dla_occupied.add((cr, cc))
+        _dla_next_id = 2
+    elif seed_type == "bottom":
+        r = rows - 1
+        for c in range(cols):
+            _dla_grid[r][c] = 1
+            _dla_occupied.add((r, c))
+        _dla_next_id = 2
+    elif seed_type == "top":
+        for c in range(cols):
+            _dla_grid[0][c] = 1
+            _dla_occupied.add((0, c))
+        _dla_next_id = 2
+    elif seed_type == "multi":
+        import random as _rng
+        num_seeds = max(5, (rows * cols) // 500)
+        for _ in range(num_seeds):
+            sr = _rng.randint(0, rows - 1)
+            sc = _rng.randint(0, cols - 1)
+            _dla_grid[sr][sc] = 1
+            _dla_occupied.add((sr, sc))
+        _dla_next_id = 2
+
+
+def _dla_step():
+    """Release random walkers from edges; they diffuse and stick to structure."""
+    global _dla_next_id
+    import random as _rng
+    rows, cols = _dla_rows, _dla_cols
+    if rows < 3 or cols < 3:
+        return
+
+    for _ in range(_dla_walkers_per_step):
+        # Spawn walker on a random edge
+        side = _rng.randint(0, 3)
+        if side == 0:    # top
+            wr, wc = 0, _rng.randint(0, cols - 1)
+        elif side == 1:  # bottom
+            wr, wc = rows - 1, _rng.randint(0, cols - 1)
+        elif side == 2:  # left
+            wr, wc = _rng.randint(0, rows - 1), 0
+        else:            # right
+            wr, wc = _rng.randint(0, rows - 1), cols - 1
+
+        # If spawn point is already occupied, skip
+        if (wr, wc) in _dla_occupied:
+            continue
+
+        # Walk until we stick or leave the grid
+        max_steps = (rows + cols) * 2
+        for _ in range(max_steps):
+            # Check if adjacent to structure
+            adjacent = False
+            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                nr, nc = wr + dr, wc + dc
+                if (nr, nc) in _dla_occupied:
+                    adjacent = True
+                    break
+
+            if adjacent:
+                if _dla_sticking_prob >= 1.0 or _rng.random() < _dla_sticking_prob:
+                    _dla_grid[wr][wc] = _dla_next_id
+                    _dla_occupied.add((wr, wc))
+                    _dla_next_id += 1
+                    break
+                # Didn't stick, keep walking
+
+            # Random walk with optional bias
+            dx = _rng.choice([-1, 0, 1])
+            dy = _rng.choice([-1, 0, 1])
+            if dx == 0 and dy == 0:
+                continue
+            # Apply directional bias
+            if _dla_bias_x != 0.0 and _rng.random() < abs(_dla_bias_x):
+                dx = 1 if _dla_bias_x > 0 else -1
+            if _dla_bias_y != 0.0 and _rng.random() < abs(_dla_bias_y):
+                dy = 1 if _dla_bias_y > 0 else -1
+
+            nr, nc = wr + dy, wc + dx
+            if nr < 0 or nr >= rows or nc < 0 or nc >= cols:
+                break  # walker left the grid
+            if (nr, nc) in _dla_occupied:
+                continue  # can't walk into occupied cell
+            wr, wc = nr, nc
+
+
+def _dla_to_grid(rows, cols):
+    """Convert DLA aggregation IDs to display values for rendering."""
+    grid = [[0] * cols for _ in range(rows)]
+    if _dla_next_id <= 1:
+        return grid
+    max_id = _dla_next_id - 1
+    for r in range(rows):
+        for c in range(cols):
+            v = _dla_grid[r][c]
+            if v > 0:
+                # Map to 1-100 based on aggregation order for color gradient
+                grid[r][c] = max(1, (v * 100) // (max_id + 1))
+    return grid
+
+
+def _dla_color(val):
+    """Map DLA grid value to a curses color pair — gradient from tips to core."""
+    if val <= 0:
+        return 1       # empty
+    if val <= 15:
+        return 7       # newest growth — white
+    if val <= 35:
+        return 5       # young — cyan
+    if val <= 55:
+        return 6       # mid — blue
+    if val <= 75:
+        return 1       # older — green
+    if val <= 90:
+        return 15      # old — yellow
+    return 21          # core / seed — red
+
+
 # --- Lenia: Continuous Smooth-Kernel Cellular Automata ---
 # Generalizes Conway's Life into continuous space and time using smooth
 # ring-shaped kernels and a Gaussian growth function.
@@ -2832,6 +3032,10 @@ def place_pattern(grid, name, row_off=None, col_off=None):
 def step(grid, rule=None):
     if rule is None:
         rule = RULES["life"]
+    if _is_dla(rule):
+        rows, cols = len(grid), len(grid[0])
+        _dla_step()
+        return _dla_to_grid(rows, cols)
     if _is_sandpile(rule):
         rows, cols = len(grid), len(grid[0])
         _sp_step()
@@ -3441,7 +3645,7 @@ def _render_braille_grid(grid, rows, cols, term_rows, term_cols):
     return lines
 
 
-def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=False, wator=False, fallingsand=False, sandpile=False):
+def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=False, wator=False, fallingsand=False, sandpile=False, dla=False):
     """Pick the curses color pair for a Braille cell based on majority vote.
 
     Examines the 2×4 block of grid cells that map to terminal position (tr, tc)
@@ -3457,6 +3661,10 @@ def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=Fals
                 if gs:
                     cp = _grayscott_color(age)
                     counts[cp] = counts.get(cp, 0) + 1
+                elif dla:
+                    if age:
+                        cp = _dla_color(age)
+                        counts[cp] = counts.get(cp, 0) + 1
                 elif sandpile:
                     if age:
                         cp = _sp_color(age)
@@ -4835,6 +5043,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         fallingsand = _is_fallingsand(rule)
         physarum = _is_physarum(rule)
         sandpile = _is_sandpile(rule)
+        dla = _is_dla(rule)
 
         # Track population
         pop = _count_population(grid)
@@ -4903,7 +5112,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     ch = braille_lines[tr][tc]
                     if ch == chr(_BRAILLE_BASE):
                         continue  # empty — skip for speed
-                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia or physarum, turmite=turmite, wator=wator, fallingsand=fallingsand, sandpile=sandpile)
+                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia or physarum, turmite=turmite, wator=wator, fallingsand=fallingsand, sandpile=sandpile, dla=dla)
                     try:
                         stdscr.addstr(tr, tc, ch, curses.color_pair(cp))
                     except curses.error:
@@ -4934,6 +5143,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                         attr = curses.color_pair(8)
                     elif detected_cells and (r, c) in detected_cells:
                         attr = curses.color_pair(12)
+                    elif dla:
+                        attr = curses.color_pair(_dla_color(age))
+                        cell_str = "\u2588\u2588" if age else "  "
                     elif sandpile:
                         attr = curses.color_pair(_sp_color(age))
                         cell_str = "\u2588\u2588" if age else "  "
@@ -5942,6 +6154,30 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 hist_idx = 0
                 browsing_history = False
                 pop_history = []
+            elif key == ord("<") and dla:
+                # Previous DLA preset
+                _dla_preset_idx = (_dla_preset_idx - 1) % len(DLA_PRESET_NAMES)
+                preset_name = DLA_PRESET_NAMES[_dla_preset_idx]
+                rule["name"] = f"DLA ({DLA_PRESETS[preset_name]['name']})"
+                _dla_init(rows, cols, preset_name)
+                grid = _dla_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord(">") and dla:
+                # Next DLA preset
+                _dla_preset_idx = (_dla_preset_idx + 1) % len(DLA_PRESET_NAMES)
+                preset_name = DLA_PRESET_NAMES[_dla_preset_idx]
+                rule["name"] = f"DLA ({DLA_PRESETS[preset_name]['name']})"
+                _dla_init(rows, cols, preset_name)
+                grid = _dla_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
             elif key == ord("<") and sandpile:
                 # Previous Sandpile preset
                 _sp_preset_idx = (_sp_preset_idx - 1) % len(SANDPILE_PRESET_NAMES)
@@ -6800,6 +7036,13 @@ def main():
              "Options: " + ", ".join(SANDPILE_PRESETS.keys()),
     )
     parser.add_argument(
+        "--dla-preset",
+        choices=list(DLA_PRESETS.keys()),
+        default="snowflake",
+        help="DLA preset when --rule dla (default: snowflake). "
+             "Options: " + ", ".join(DLA_PRESETS.keys()),
+    )
+    parser.add_argument(
         "--discover",
         action="store_true",
         default=False,
@@ -6868,7 +7111,7 @@ def main():
     )
     args = parser.parse_args()
 
-    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx, _fs_preset_idx, _sp_preset_idx
+    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx, _fs_preset_idx, _sp_preset_idx, _dla_preset_idx
 
     # Headless batch-render mode: output PNG frames without terminal UI
     if args.render is not None:
@@ -7036,6 +7279,15 @@ def main():
             rule["name"] = f"Physarum ({preset['name']})"
         _phys_init(args.rows, args.cols, phys_preset_name)
         grid = _phys_to_grid(args.rows, args.cols)
+    elif args.rule.lower() == "dla":
+        # Diffusion-Limited Aggregation fractal growth
+        dla_preset_name = args.dla_preset
+        if dla_preset_name in DLA_PRESETS:
+            _dla_preset_idx = DLA_PRESET_NAMES.index(dla_preset_name)
+            preset = DLA_PRESETS[dla_preset_name]
+            rule["name"] = f"DLA ({preset['name']})"
+        _dla_init(args.rows, args.cols, dla_preset_name)
+        grid = _dla_to_grid(args.rows, args.cols)
     elif args.rule.lower() == "sandpile":
         # Abelian Sandpile self-organized criticality
         sp_preset_name = args.sandpile_preset

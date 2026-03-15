@@ -1,6 +1,6 @@
 # Cellular Automaton — Terminal Simulator
 
-A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, and supports arbitrary rules via B/S notation.
+A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, and supports arbitrary rules via B/S notation.
 
 ## Usage
 
@@ -35,6 +35,8 @@ python3 life.py --rule physarum                        # Physarum slime mold (de
 python3 life.py --rule physarum --physarum-preset network # efficient transport paths
 python3 life.py --rule sandpile                          # Abelian Sandpile (single-source)
 python3 life.py --rule sandpile --sandpile-preset random-rain # uniform random grain drops
+python3 life.py --rule dla                               # DLA fractal growth (snowflake)
+python3 life.py --rule dla --dla-preset lightning         # bolt-like downward paths
 python3 life.py --script probabilistic_life        # run a user script on startup
 python3 life.py --script ~/my_script.py            # run a script from a file path
 python3 life.py --discover                         # evolve interesting rulesets via GA
@@ -52,7 +54,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--speed`   | 0.1       | Delay between generations (seconds)  |
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
 | `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
-| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, `sandpile`, or B/S notation (e.g. `B36/S23`) |
+| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, `sandpile`, `dla`, or B/S notation (e.g. `B36/S23`) |
 | `--gs-preset` | `mitosis` | Gray-Scott parameter preset (`mitosis`, `coral`, `solitons`, `maze`, `spots`, `worms`, `waves`, `bubbles`) |
 | `--lenia-preset` | `orbium` | Lenia species preset (`orbium`, `geminium`, `scutium`, `hydrogeminium`, `wanderer`, `smooth_life`) |
 | `--eca-rule` | 30        | Wolfram rule number (0–255) for Elementary CA mode |
@@ -61,6 +63,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--fallingsand-preset` | `hourglass` | Falling Sand preset (`hourglass`, `rain`, `volcano`, `garden`, `sandbox`, `cascade`) |
 | `--physarum-preset` | `dendritic` | Physarum slime mold preset (`dendritic`, `fungal`, `network`, `rings`, `tendrils`, `lattice`) |
 | `--sandpile-preset` | `single-source` | Abelian Sandpile preset (`single-source`, `random-rain`, `identity`, `max-stable`) |
+| `--dla-preset` | `snowflake` | DLA fractal preset (`snowflake`, `electrode`, `coral`, `lightning`) |
 | `--script`  | —         | Run a Python script on startup (path or name from `~/.life-scripts/`) |
 | `--discover` | off      | Launch genetic algorithm rule discovery mode |
 | `--ga-generations` | 50 | Number of GA generations in discovery mode |
@@ -89,7 +92,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `B`       | Toggle Braille high-density rendering |
 | `T`       | Cycle topology (Torus → Klein Bottle → Möbius Strip → Bounded) |
 | `H`       | Toggle HashLife hyperspeed mode   |
-| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode; cycle Physarum presets in Physarum mode; cycle Sandpile presets in Sandpile mode |
+| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode; cycle Physarum presets in Physarum mode; cycle Sandpile presets in Sandpile mode; cycle DLA presets in DLA mode |
 | `W`       | Enter a specific Wolfram rule number (0–255) in Elementary CA mode |
 | `G`       | Export history as animated GIF    |
 | `L`       | Load and run a script             |
@@ -599,6 +602,58 @@ Press `<`/`>` at runtime to cycle through presets.
 
 - **HashLife** — incompatible (grid-free simulation). Switching to Sandpile mode auto-deactivates HashLife.
 - **Randomize** (`r`) — re-initializes the sandpile with the current preset.
+- **Status bar** — shows the current preset name.
+
+## Diffusion-Limited Aggregation (DLA)
+
+Random walkers diffuse through space and **stick on contact** with existing structure, producing stunning fractal dendrites — like frost on a window, mineral deposits, or lightning bolts. DLA is a classic **aggregation/growth** model, distinct from the cellular automata and population dynamics elsewhere in this project.
+
+### Starting DLA
+
+```bash
+python3 life.py --rule dla                            # default snowflake preset
+python3 life.py --rule dla --dla-preset electrode     # bottom-edge seed, upward growth
+python3 life.py --rule dla --dla-preset coral          # multiple scattered seeds
+python3 life.py --rule dla --dla-preset lightning      # top seed with downward bias
+```
+
+### Presets
+
+| Preset | Description |
+|--------|-------------|
+| `snowflake` | Central seed grows radial fractal dendrites |
+| `electrode` | Bottom-edge seed line grows upward dendrites |
+| `coral` | Multiple scattered seeds grow into each other (80% sticking probability) |
+| `lightning` | Top-edge seed with downward bias creates bolt-like paths (70% sticking) |
+
+Press `<`/`>` at runtime to cycle through presets.
+
+### How It Works
+
+Each step releases a batch of random walkers from the grid edges. Walkers take random steps (with optional directional bias) until they land adjacent to existing structure. If a sticking-probability check passes, they join the aggregate; otherwise they keep walking. Walkers that leave the grid are discarded.
+
+### Colors
+
+Cells are colored by **aggregation order** (when they joined the structure):
+
+| Age | Color |
+|-----|-------|
+| Newest tips | White |
+| Young growth | Cyan |
+| Mid growth | Blue |
+| Older growth | Green |
+| Old growth | Yellow |
+| Core / seed | Red |
+
+### Rendering
+
+- **Terminal** — aggregated cells render as filled blocks with age-gradient colors.
+- **Braille** — supported; color chosen by majority vote of the 2×4 block.
+
+### Interactions
+
+- **HashLife** — incompatible (grid-free simulation). Switching to DLA mode auto-deactivates HashLife.
+- **Randomize** (`r`) — re-initializes DLA with the current preset.
 - **Status bar** — shows the current preset name.
 
 ## Population Statistics Dashboard
