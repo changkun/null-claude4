@@ -14,6 +14,7 @@ import socket
 import struct
 import threading
 import time
+import zlib
 
 # --- Optional NumPy/SciPy for vectorized compute backend ---
 
@@ -1221,6 +1222,297 @@ def export_gif(history_frames, rows, cols, filepath, cell_size=4, delay_cs=10, w
 
     with open(filepath, "wb") as f:
         f.write(buf)
+
+
+# --- High-Resolution PNG Rendering ---
+
+# Named color palettes: each maps (dead, age1-3, age4-8, age9-20, age21+,
+#                                    ww_head, ww_tail, ww_conductor)
+_PNG_PALETTES = {
+    "classic": [
+        (0, 0, 0),          # dead (black)
+        (0, 200, 0),        # newborn (green)
+        (0, 200, 200),      # young (cyan)
+        (0, 80, 255),       # mature (blue)
+        (200, 0, 200),      # ancient (magenta)
+        (0, 80, 255),       # WW head (blue)
+        (200, 0, 0),        # WW tail (red)
+        (200, 200, 0),      # WW conductor (yellow)
+    ],
+    "ember": [
+        (10, 10, 10),       # dead (near-black)
+        (255, 200, 50),     # newborn (bright yellow)
+        (255, 130, 20),     # young (orange)
+        (220, 40, 10),      # mature (red)
+        (120, 10, 50),      # ancient (dark crimson)
+        (255, 255, 100),    # WW head
+        (180, 60, 20),      # WW tail
+        (100, 100, 100),    # WW conductor
+    ],
+    "ocean": [
+        (5, 10, 30),        # dead (deep navy)
+        (80, 220, 255),     # newborn (sky blue)
+        (30, 160, 220),     # young (ocean blue)
+        (10, 80, 180),      # mature (deep blue)
+        (120, 200, 255),    # ancient (ice blue)
+        (0, 255, 200),      # WW head (teal)
+        (0, 100, 120),      # WW tail
+        (40, 60, 100),      # WW conductor
+    ],
+    "mono": [
+        (0, 0, 0),          # dead (black)
+        (255, 255, 255),    # newborn (white)
+        (200, 200, 200),    # young (light grey)
+        (140, 140, 140),    # mature (grey)
+        (80, 80, 80),       # ancient (dark grey)
+        (255, 255, 255),    # WW head
+        (140, 140, 140),    # WW tail
+        (80, 80, 80),       # WW conductor
+    ],
+    "matrix": [
+        (0, 0, 0),          # dead (black)
+        (0, 255, 0),        # newborn (bright green)
+        (0, 200, 0),        # young (green)
+        (0, 140, 0),        # mature (dark green)
+        (0, 80, 0),         # ancient (dim green)
+        (0, 255, 100),      # WW head
+        (0, 120, 0),        # WW tail
+        (0, 60, 0),         # WW conductor
+    ],
+}
+
+
+def _png_age_to_index(age):
+    """Map cell age to PNG palette index."""
+    if age == 0:
+        return 0
+    elif age <= 3:
+        return 1
+    elif age <= 8:
+        return 2
+    elif age <= 20:
+        return 3
+    else:
+        return 4
+
+
+def _png_ww_to_index(state):
+    """Map Wireworld cell state to PNG palette index."""
+    if state == WW_HEAD:
+        return 5
+    elif state == WW_TAIL:
+        return 6
+    elif state == WW_CONDUCTOR:
+        return 7
+    return 0
+
+
+def _blend_rgb(c1, c2, t):
+    """Linearly blend two RGB tuples by factor t (0.0=c1, 1.0=c2)."""
+    return (
+        int(c1[0] + (c2[0] - c1[0]) * t),
+        int(c1[1] + (c2[1] - c1[1]) * t),
+        int(c1[2] + (c2[2] - c1[2]) * t),
+    )
+
+
+def _png_chunk(chunk_type, data):
+    """Build a PNG chunk: length + type + data + CRC32."""
+    raw = chunk_type + data
+    return struct.pack(">I", len(data)) + raw + struct.pack(">I", zlib.crc32(raw) & 0xFFFFFFFF)
+
+
+def render_png(grid, rows, cols, filepath, cell_size=8, palette_name="classic",
+               grid_lines=False, grid_line_color=None, wireworld=False, aa=True):
+    """Render a single grid frame as a high-resolution PNG image.
+
+    Args:
+        grid: 2D grid (grid[r][c] = age int or WW state)
+        rows, cols: grid dimensions
+        filepath: output .png path
+        cell_size: pixel size of each cell (default 8)
+        palette_name: color palette name (default "classic")
+        grid_lines: if True, draw 1px grid lines between cells
+        grid_line_color: RGB tuple for grid lines (default: dark grey)
+        wireworld: if True, use Wireworld color mapping
+        aa: if True, apply anti-aliasing at cell boundaries
+    """
+    palette = _PNG_PALETTES.get(palette_name, _PNG_PALETTES["classic"])
+    if grid_line_color is None:
+        grid_line_color = (40, 40, 40)
+
+    line_w = 1 if grid_lines else 0
+    width = cols * cell_size + (cols + 1) * line_w if grid_lines else cols * cell_size
+    height = rows * cell_size + (rows + 1) * line_w if grid_lines else rows * cell_size
+
+    # Build color index map for the grid
+    color_map = [[0] * cols for _ in range(rows)]
+    for r in range(rows):
+        for c in range(cols):
+            if wireworld:
+                color_map[r][c] = _png_ww_to_index(grid[r][c])
+            else:
+                color_map[r][c] = _png_age_to_index(grid[r][c])
+
+    # Build raw pixel rows (each row: filter byte + RGB triples)
+    raw_data = bytearray()
+    aa_radius = 1 if (aa and cell_size >= 4) else 0
+
+    for py in range(height):
+        raw_data.append(0)  # PNG filter: None
+        for px in range(width):
+            # Determine which cell this pixel belongs to
+            if grid_lines:
+                # Check if pixel is on a grid line
+                gx = px % (cell_size + line_w)
+                gy = py % (cell_size + line_w)
+                cell_c = px // (cell_size + line_w)
+                cell_r = py // (cell_size + line_w)
+                on_line = gx < line_w or gy < line_w
+                if on_line or cell_r >= rows or cell_c >= cols:
+                    raw_data.extend(grid_line_color)
+                    continue
+                local_x = gx - line_w
+                local_y = gy - line_w
+            else:
+                cell_c = px // cell_size
+                cell_r = py // cell_size
+                local_x = px % cell_size
+                local_y = py % cell_size
+                if cell_r >= rows or cell_c >= cols:
+                    raw_data.extend(palette[0])
+                    continue
+
+            base_idx = color_map[cell_r][cell_c]
+            base_color = palette[base_idx]
+
+            # Anti-aliasing: blend edge pixels with neighbouring cell colors
+            if aa_radius and cell_size >= 4:
+                blend_total = (0.0, 0.0, 0.0)
+                weight_total = 0.0
+
+                # Check proximity to each cell edge
+                edges = []
+                if local_x < aa_radius and cell_c > 0:
+                    t = 1.0 - local_x / aa_radius
+                    edges.append((cell_r, cell_c - 1, t * 0.5))
+                if local_x >= cell_size - aa_radius and cell_c < cols - 1:
+                    t = 1.0 - (cell_size - 1 - local_x) / aa_radius
+                    edges.append((cell_r, cell_c + 1, t * 0.5))
+                if local_y < aa_radius and cell_r > 0:
+                    t = 1.0 - local_y / aa_radius
+                    edges.append((cell_r - 1, cell_c, t * 0.5))
+                if local_y >= cell_size - aa_radius and cell_r < rows - 1:
+                    t = 1.0 - (cell_size - 1 - local_y) / aa_radius
+                    edges.append((cell_r + 1, cell_c, t * 0.5))
+
+                if edges:
+                    base_w = 1.0
+                    br, bg, bb = float(base_color[0]), float(base_color[1]), float(base_color[2])
+                    for nr, nc, w in edges:
+                        n_color = palette[color_map[nr][nc]]
+                        if n_color != base_color:
+                            br += n_color[0] * w
+                            bg += n_color[1] * w
+                            bb += n_color[2] * w
+                            base_w += w
+                    raw_data.extend((
+                        min(255, int(br / base_w)),
+                        min(255, int(bg / base_w)),
+                        min(255, int(bb / base_w)),
+                    ))
+                    continue
+
+            raw_data.extend(base_color)
+
+    # Encode as PNG
+    buf = bytearray()
+
+    # PNG signature
+    buf.extend(b"\x89PNG\r\n\x1a\n")
+
+    # IHDR chunk
+    ihdr_data = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    buf.extend(_png_chunk(b"IHDR", ihdr_data))
+
+    # IDAT chunk(s) - compress raw pixel data with zlib
+    compressed = zlib.compress(bytes(raw_data), 9)
+    # Split into 32KB IDAT chunks for compatibility
+    offset = 0
+    while offset < len(compressed):
+        chunk_data = compressed[offset:offset + 32768]
+        buf.extend(_png_chunk(b"IDAT", chunk_data))
+        offset += 32768
+
+    # IEND chunk
+    buf.extend(_png_chunk(b"IEND", b""))
+
+    with open(filepath, "wb") as f:
+        f.write(buf)
+
+
+def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations,
+                        cell_size, palette_name, grid_lines, grid_line_color,
+                        output_dir, wireworld=False, aa=True):
+    """Run the simulation headlessly and render PNG frames.
+
+    Args:
+        rows, cols: grid dimensions
+        speed: not used (headless runs as fast as possible)
+        rule: rule dict (b/s sets + name)
+        pattern: pattern name to place
+        load_path: path to load pattern from (or None)
+        generations: number of generations to render
+        cell_size: pixel size per cell
+        palette_name: color palette name
+        grid_lines: whether to draw grid lines
+        grid_line_color: RGB tuple for grid lines
+        output_dir: directory to write PNG files
+        wireworld: if True, use Wireworld color mapping
+        aa: if True, anti-alias cell boundaries
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    ww = wireworld or _is_wireworld(rule)
+
+    # Initialize grid
+    grid = make_grid(rows, cols)
+    if load_path:
+        path = load_path
+        if not os.path.isfile(path):
+            for ext in ("", ".rle", ".cells"):
+                candidate = os.path.join(CELLS_DIR, path + ext)
+                if os.path.isfile(candidate):
+                    path = candidate
+                    break
+        grid, loaded_ww = _load_pattern_file(path, rows, cols)
+        if loaded_ww:
+            ww = True
+    elif ww and not load_path:
+        place_wireworld_pattern(grid, "ww_clock")
+    else:
+        place_pattern(grid, pattern)
+
+    # Render frames
+    digits = len(str(generations))
+    print(f"Rendering {generations} frames at {cols * cell_size}x{rows * cell_size}px "
+          f"(cell_size={cell_size}, palette={palette_name})")
+    print(f"Output directory: {os.path.abspath(output_dir)}")
+
+    for gen in range(generations):
+        fname = f"frame_{str(gen).zfill(digits)}.png"
+        fpath = os.path.join(output_dir, fname)
+        render_png(grid, rows, cols, fpath,
+                   cell_size=cell_size, palette_name=palette_name,
+                   grid_lines=grid_lines, grid_line_color=grid_line_color,
+                   wireworld=ww, aa=aa)
+
+        if gen % 10 == 0 or gen == generations - 1:
+            print(f"  [{gen + 1}/{generations}] {fname}")
+
+        grid = step(grid, rule)
+
+    print(f"Done. {generations} PNG frames written to {os.path.abspath(output_dir)}/")
 
 
 # --- Sound Synthesis Mode ---
@@ -3464,7 +3756,76 @@ def main():
         metavar="N",
         help="Simulation steps per candidate in discovery mode (default: 200)",
     )
+    parser.add_argument(
+        "--render",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Headless batch-render mode: run N generations and output PNG frames",
+    )
+    parser.add_argument(
+        "--cell-size",
+        type=int,
+        default=8,
+        metavar="PX",
+        help="Pixel size of each cell for PNG rendering (default: 8)",
+    )
+    parser.add_argument(
+        "--palette",
+        choices=list(_PNG_PALETTES.keys()),
+        default="classic",
+        help="Color palette for PNG rendering (default: classic). "
+             "Options: " + ", ".join(_PNG_PALETTES.keys()),
+    )
+    parser.add_argument(
+        "--grid-lines",
+        action="store_true",
+        default=False,
+        help="Draw grid lines between cells in PNG output",
+    )
+    parser.add_argument(
+        "--no-aa",
+        action="store_true",
+        default=False,
+        help="Disable anti-aliasing on cell edges in PNG output",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="frames",
+        metavar="DIR",
+        help="Output directory for rendered PNG frames (default: frames)",
+    )
     args = parser.parse_args()
+
+    # Headless batch-render mode: output PNG frames without terminal UI
+    if args.render is not None:
+        if args.render < 1:
+            parser.error("--render requires a positive integer (number of generations)")
+        # Resolve rule
+        if args.rule.lower() in RULES:
+            rule = RULES[args.rule.lower()]
+        else:
+            try:
+                rule = parse_rule_string(args.rule)
+            except ValueError as e:
+                parser.error(str(e))
+        run_headless_render(
+            rows=args.rows,
+            cols=args.cols,
+            speed=args.speed,
+            rule=rule,
+            pattern=args.pattern,
+            load_path=args.load,
+            generations=args.render,
+            cell_size=args.cell_size,
+            palette_name=args.palette,
+            grid_lines=args.grid_lines,
+            grid_line_color=None,
+            output_dir=args.output_dir,
+            aa=not args.no_aa,
+        )
+        return
 
     # Discovery mode: run genetic algorithm to find interesting rules
     if args.discover:

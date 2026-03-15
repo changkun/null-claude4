@@ -20,6 +20,8 @@ python3 life.py --script probabilistic_life        # run a user script on startu
 python3 life.py --script ~/my_script.py            # run a script from a file path
 python3 life.py --discover                         # evolve interesting rulesets via GA
 python3 life.py --discover --ga-generations 100    # more generations for deeper search
+python3 life.py --render 100 --palette ember       # 100 PNG frames with ember palette
+python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame with grid
 ```
 
 ### Options
@@ -37,6 +39,12 @@ python3 life.py --discover --ga-generations 100    # more generations for deeper
 | `--ga-generations` | 50 | Number of GA generations in discovery mode |
 | `--ga-pop-size` | 60    | Population size per GA generation |
 | `--ga-sim-depth` | 200  | Simulation steps per candidate evaluation |
+| `--render`   | —         | Headless batch-render mode: run N generations and output PNG frames |
+| `--cell-size`| 8         | Pixel size of each cell for PNG rendering |
+| `--palette`  | `classic` | Color palette for PNG rendering (`classic`, `ember`, `ocean`, `mono`, `matrix`) |
+| `--grid-lines`| off      | Draw 1px grid lines between cells in PNG output |
+| `--no-aa`    | off       | Disable anti-aliasing on cell edges in PNG output |
+| `--output-dir`| `frames` | Output directory for rendered PNG frames |
 
 ### Controls
 
@@ -386,6 +394,45 @@ The curses interface has two phases:
 | `Space`   | Play/pause preview animation      |
 | `r`       | Restart preview                   |
 | `q`/`Esc` | Quit                              |
+
+## Headless PNG Rendering
+
+The `--render` flag runs the simulation headlessly (no terminal UI) and outputs high-resolution PNG frames — useful for creating wallpapers, poster prints, or feeding into `ffmpeg` for HD video.
+
+```bash
+# 100 frames of random pattern at 1920x1080 with ember palette
+python3 life.py --render 100 --rows 135 --cols 240 --cell-size 8 --palette ember --output-dir hd_frames
+
+# Wallpaper-quality single frame with grid lines
+python3 life.py --render 1 --rows 50 --cols 80 --cell-size 32 --palette ocean --grid-lines
+
+# Feed into ffmpeg for HD video
+python3 life.py --render 300 --rows 67 --cols 120 --cell-size 16 --output-dir vid_frames
+ffmpeg -framerate 30 -i vid_frames/frame_%03d.png -c:v libx264 output.mp4
+```
+
+### Color Palettes
+
+| Palette   | Description                          |
+|-----------|--------------------------------------|
+| `classic` | Matches terminal colors (green→cyan→blue→magenta on black) |
+| `ember`   | Warm fire tones (yellow→orange→red→crimson) |
+| `ocean`   | Cool blues (sky→ocean→deep→ice on navy) |
+| `mono`    | Greyscale (white→grey→dark grey on black) |
+| `matrix`  | Green-on-black (bright→dim green) |
+
+All palettes include Wireworld-specific colors for head, tail, and conductor states. Wireworld mode is auto-detected from the active rule.
+
+### Anti-Aliasing
+
+Edge pixels between cells of different states are blended for smooth transitions. This produces publication-quality output at any cell size ≥ 4px. Disable with `--no-aa` for pixel-perfect hard edges.
+
+### Technical Details
+
+- **Pure Python PNG encoder** — generates valid PNG files using only `zlib` (stdlib) for DEFLATE compression. No Pillow, no external dependencies.
+- **CRC32 validation** on all chunks; IDAT data split into 32KB chunks for broad compatibility.
+- **Arbitrary resolution** — cell size is configurable from 1px (thumbnail) to any size. A 240×135 grid at 8px/cell produces 1920×1080 frames.
+- **Grid lines** — optional 1px separators between cells for a blueprint/schematic aesthetic.
 
 ## Design Notes
 
