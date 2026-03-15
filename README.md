@@ -1,6 +1,6 @@
 # Cellular Automaton — Terminal Simulator
 
-A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, the **Ising Model** statistical mechanics spin simulation, the **Cyclic Cellular Automaton** (CCA) spiral wave generator, the **Chimera Grid** multi-rule coexistence mode, **Particle Life** emergent multi-species particle interactions, **Lattice Boltzmann** D2Q9 fluid dynamics, a **split-screen comparison mode** for watching two simulations side-by-side, and supports arbitrary rules via B/S notation.
+A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, the **Ising Model** statistical mechanics spin simulation, the **Cyclic Cellular Automaton** (CCA) spiral wave generator, the **Chimera Grid** multi-rule coexistence mode, **Particle Life** emergent multi-species particle interactions, **Lattice Boltzmann** D2Q9 fluid dynamics, **Boids** flocking/swarming simulation, a **split-screen comparison mode** for watching two simulations side-by-side, and supports arbitrary rules via B/S notation.
 
 ## Usage
 
@@ -53,6 +53,9 @@ python3 life.py --rule particlelife --particlelife-preset orbits     # asymmetri
 python3 life.py --rule fluid                                          # LBM fluid (lid-driven cavity)
 python3 life.py --rule fluid --fluid-preset karman                    # Kármán vortex street
 python3 life.py --rule fluid --fluid-preset convection                # Rayleigh-Bénard convection
+python3 life.py --rule boids                                             # Boids flocking (classic flock)
+python3 life.py --rule boids --boids-preset predator                     # predator evasion swarm
+python3 life.py --rule boids --boids-preset murmuration                  # dense starling murmuration
 python3 life.py --script probabilistic_life        # run a user script on startup
 python3 life.py --script ~/my_script.py            # run a script from a file path
 python3 life.py --compare life highlife              # split-screen: Life vs HighLife
@@ -73,7 +76,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--speed`   | 0.1       | Delay between generations (seconds)  |
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
 | `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
-| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, `sandpile`, `dla`, `forestfire`, `ising`, `cca`, `chimera`, `particlelife`, `fluid`, or B/S notation (e.g. `B36/S23`) |
+| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, `sandpile`, `dla`, `forestfire`, `ising`, `cca`, `chimera`, `particlelife`, `fluid`, `boids`, or B/S notation (e.g. `B36/S23`) |
 | `--gs-preset` | `mitosis` | Gray-Scott parameter preset (`mitosis`, `coral`, `solitons`, `maze`, `spots`, `worms`, `waves`, `bubbles`) |
 | `--lenia-preset` | `orbium` | Lenia species preset (`orbium`, `geminium`, `scutium`, `hydrogeminium`, `wanderer`, `smooth_life`) |
 | `--eca-rule` | 30        | Wolfram rule number (0–255) for Elementary CA mode |
@@ -89,6 +92,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--chimera-preset` | `life-vs-highlife` | Chimera Grid preset (`life-vs-highlife`, `life-vs-seeds`, `quad-mix`, `stripes-3`, `diagonal-clash`) |
 | `--particlelife-preset` | `primordial` | Particle Life preset (`primordial`, `clusters`, `orbits`, `swarm`, `chains`) |
 | `--fluid-preset` | `cavity` | LBM Fluid preset (`cavity`, `karman`, `convection`) |
+| `--boids-preset` | `flock` | Boids flocking preset (`flock`, `predator`, `obstacle`, `murmuration`, `vortex`) |
 | `--script`  | —         | Run a Python script on startup (path or name from `~/.life-scripts/`) |
 | `--discover` | off      | Launch genetic algorithm rule discovery mode |
 | `--ga-generations` | 50 | Number of GA generations in discovery mode |
@@ -118,7 +122,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `B`       | Toggle Braille high-density rendering |
 | `T`       | Cycle topology (Torus → Klein Bottle → Möbius Strip → Bounded) |
 | `H`       | Toggle HashLife hyperspeed mode   |
-| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode; cycle Physarum presets in Physarum mode; cycle Sandpile presets in Sandpile mode; cycle DLA presets in DLA mode; cycle Forest Fire presets in Forest Fire mode; cycle Ising presets in Ising mode; cycle CCA presets in Cyclic CA mode; cycle Particle Life presets in Particle Life mode; cycle LBM Fluid presets in Fluid mode |
+| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode; cycle Physarum presets in Physarum mode; cycle Sandpile presets in Sandpile mode; cycle DLA presets in DLA mode; cycle Forest Fire presets in Forest Fire mode; cycle Ising presets in Ising mode; cycle CCA presets in Cyclic CA mode; cycle Particle Life presets in Particle Life mode; cycle LBM Fluid presets in Fluid mode; cycle Boids presets in Boids mode |
 | `t` / `y` | Decrease / increase temperature in Ising Model mode |
 | `W`       | Enter a specific Wolfram rule number (0–255) in Elementary CA mode |
 | `G`       | Export history as animated GIF    |
@@ -210,6 +214,7 @@ All rules use Birth/Survival notation — a cell is born if it has exactly B nei
 | `chimera`    | *(multi-rule zones)* | Multiple B/S rules on one grid — see [Chimera Grid](#chimera-grid--multi-rule-coexistence) below |
 | `particlelife` | *(continuous particles)* | Multi-species particle interactions — see [Particle Life](#particle-life--primordial-soup) below |
 | `fluid`        | *(lattice Boltzmann)* | D2Q9 fluid dynamics — see [LBM Fluid Dynamics](#lbm-fluid-dynamics--lattice-boltzmann-method) below |
+| `boids`          | *(agent-based)* | Flocking/swarming simulation — see [Boids](#boids--flocking-simulation) below |
 
 Use `--rule <preset>` or `--rule B.../S...` for custom rules. Press `R` at runtime to cycle through presets.
 
@@ -911,6 +916,51 @@ This makes vortex structures, shear layers, and turbulent regions immediately vi
 - **HashLife** — incompatible (continuous distributions, not discrete cells). Switching to Fluid mode auto-deactivates HashLife.
 - **Split-screen** — fully supported. Complete LBM state (distributions, density, velocity, obstacles, temperature) is saved/restored for independent pane simulation.
 - **Randomize** (`r`) — reinitializes the flow field to the current preset's initial conditions.
+
+## Boids — Flocking Simulation
+
+Craig Reynolds' classic Boids algorithm: each agent ("boid") follows three simple rules — **separation** (avoid crowding neighbors), **alignment** (steer toward average heading of neighbors), and **cohesion** (steer toward center of mass of neighbors). These three local rules produce mesmerizing emergent flocking and swarming behavior with no central coordination.
+
+Unlike the grid-based automata, Boids tracks continuous positions and velocity vectors for each agent. The display grid renders each boid as a directional Unicode arrow (`→↗↑↖←↙↓↘`) showing its current heading, with `◆` for predators and solid blocks for obstacles.
+
+### Starting Boids
+
+```bash
+python3 life.py --rule boids                                    # classic flock (default)
+python3 life.py --rule boids --boids-preset predator             # predator evasion
+python3 life.py --rule boids --boids-preset murmuration          # dense starling murmuration
+```
+
+### Presets
+
+Press `<` / `>` at runtime to cycle through presets:
+
+| Preset | Boids | Description |
+|--------|-------|-------------|
+| `flock` | 200 | Classic flock — separation, alignment, cohesion on a toroidal field |
+| `predator` | 250 | Predator evasion — 3 predator agents chase the flock, boids flee |
+| `obstacle` | 180 | Obstacle avoidance — circular obstacles with margin turning |
+| `murmuration` | 400 | Murmuration — dense, fast flock with 1 predator producing starling-like waves |
+| `vortex` | 300 | Vortex — strong alignment and margin turning create swirling formations |
+
+### Rendering
+
+- **Terminal** — each boid renders as a directional arrow based on its velocity angle (8 directions). Predators display as `◆` diamonds. Obstacles render as solid filled blocks. Boid color reflects heading direction.
+- **Braille** — supported; boid positions are mapped to the 2×4 Braille sub-grid.
+
+### Implementation
+
+- **Pure Python engine** — O(n²) pairwise neighbor loop with toroidal distance wrapping; dependency-free
+- **NumPy vectorized engine** — fully broadcast pairwise distance matrix, vectorized rule accumulation, and batch velocity clamping; automatically used when NumPy is available
+- **Toroidal world** — boid positions wrap on a continuous toroidal field (4× grid resolution) so flocks flow seamlessly across edges
+- **Predators** — separate agents that chase the nearest boid; boids within predator range apply a flee force
+- **Obstacles** — circular obstacles that boids steer around; configurable margin turning pushes boids away from world edges
+
+### Interactions
+
+- **HashLife** — incompatible (continuous agent-based, not discrete cells). Switching to Boids mode auto-deactivates HashLife.
+- **Split-screen** — fully supported. Complete Boids state (positions, velocities, predators, obstacles) is saved/restored for independent pane simulation.
+- **Randomize** (`r`) — re-scatters all boids and predators to random positions with random headings.
 
 ## Population Statistics Dashboard
 

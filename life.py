@@ -52,6 +52,7 @@ RULES = {
     "chimera": {"b": set(), "s": set(), "name": "Chimera Grid (Life|HighLife)", "chimera": True},
     "particlelife": {"b": set(), "s": set(), "name": "Particle Life (Primordial Soup)", "particlelife": True},
     "fluid": {"b": set(), "s": set(), "name": "LBM Fluid (Lid-Driven Cavity)", "fluid": True},
+    "boids": {"b": set(), "s": set(), "name": "Boids (Classic Flock)", "boids": True},
 }
 
 RULE_NAMES = list(RULES.keys())
@@ -202,6 +203,11 @@ def _is_particlelife(rule):
 def _is_fluid(rule):
     """Check if the current rule is the Lattice Boltzmann fluid simulation."""
     return rule.get("fluid", False)
+
+
+def _is_boids(rule):
+    """Check if the current rule is the Boids flocking simulation."""
+    return rule.get("boids", False)
 
 
 # --- Wa-Tor Predator-Prey Ecosystem ---
@@ -3653,6 +3659,546 @@ def _lbm_color(val):
         return 7        # magenta — strong CCW rotation
 
 
+# --- Boids Flocking Simulation ---
+# Craig Reynolds' classic Boids algorithm: each agent ("boid") follows three
+# simple rules — separation (avoid crowding), alignment (steer toward average
+# heading of neighbors), and cohesion (steer toward center of mass of neighbors).
+# These produce mesmerizing emergent flocking / swarming behavior.
+# Boids have continuous positions and velocity vectors; the display grid shows
+# directional Unicode arrows indicating each boid's heading.
+
+BOIDS_PRESETS = {
+    "flock": {
+        "name": "Classic Flock",
+        "n_boids": 200,
+        "visual_range": 60.0,
+        "separation_dist": 15.0,
+        "max_speed": 4.0,
+        "separation_weight": 0.05,
+        "alignment_weight": 0.05,
+        "cohesion_weight": 0.005,
+        "n_predators": 0,
+        "predator_range": 0.0,
+        "predator_speed": 0.0,
+        "obstacles": False,
+        "turn_margin": 0.0,
+        "turn_factor": 0.0,
+    },
+    "predator": {
+        "name": "Predator Evasion",
+        "n_boids": 250,
+        "visual_range": 70.0,
+        "separation_dist": 12.0,
+        "max_speed": 4.5,
+        "separation_weight": 0.05,
+        "alignment_weight": 0.04,
+        "cohesion_weight": 0.005,
+        "n_predators": 3,
+        "predator_range": 100.0,
+        "predator_speed": 3.5,
+        "obstacles": False,
+        "turn_margin": 0.0,
+        "turn_factor": 0.0,
+    },
+    "obstacle": {
+        "name": "Obstacle Avoidance",
+        "n_boids": 180,
+        "visual_range": 55.0,
+        "separation_dist": 14.0,
+        "max_speed": 3.5,
+        "separation_weight": 0.06,
+        "alignment_weight": 0.05,
+        "cohesion_weight": 0.005,
+        "n_predators": 0,
+        "predator_range": 0.0,
+        "predator_speed": 0.0,
+        "obstacles": True,
+        "turn_margin": 40.0,
+        "turn_factor": 0.5,
+    },
+    "murmuration": {
+        "name": "Murmuration",
+        "n_boids": 400,
+        "visual_range": 50.0,
+        "separation_dist": 10.0,
+        "max_speed": 5.0,
+        "separation_weight": 0.04,
+        "alignment_weight": 0.08,
+        "cohesion_weight": 0.003,
+        "n_predators": 1,
+        "predator_range": 120.0,
+        "predator_speed": 3.0,
+        "obstacles": False,
+        "turn_margin": 0.0,
+        "turn_factor": 0.0,
+    },
+    "vortex": {
+        "name": "Vortex",
+        "n_boids": 300,
+        "visual_range": 45.0,
+        "separation_dist": 8.0,
+        "max_speed": 4.0,
+        "separation_weight": 0.03,
+        "alignment_weight": 0.1,
+        "cohesion_weight": 0.008,
+        "n_predators": 0,
+        "predator_range": 0.0,
+        "predator_speed": 0.0,
+        "obstacles": False,
+        "turn_margin": 60.0,
+        "turn_factor": 0.8,
+    },
+}
+
+BOIDS_PRESET_NAMES = list(BOIDS_PRESETS.keys())
+
+# Module-level Boids state
+_boids_x = None           # 1D list of boid x-positions (float, world coords)
+_boids_y = None           # 1D list of boid y-positions
+_boids_vx = None          # 1D list of boid x-velocities
+_boids_vy = None          # 1D list of boid y-velocities
+_boids_n = 200
+_boids_visual_range = 60.0
+_boids_sep_dist = 15.0
+_boids_max_speed = 4.0
+_boids_sep_w = 0.05
+_boids_ali_w = 0.05
+_boids_coh_w = 0.005
+_boids_world_w = 0.0
+_boids_world_h = 0.0
+_boids_rows = 0
+_boids_cols = 0
+_boids_preset_idx = 0
+# Predators: separate agents that chase boids; boids flee from them
+_boids_pred_x = None
+_boids_pred_y = None
+_boids_pred_vx = None
+_boids_pred_vy = None
+_boids_n_pred = 0
+_boids_pred_range = 100.0
+_boids_pred_speed = 3.5
+# Obstacles: list of (cx, cy, radius) circles in world coords
+_boids_obstacles = None
+_boids_turn_margin = 0.0
+_boids_turn_factor = 0.0
+
+
+def _boids_init(rows, cols, preset_name=None):
+    """Initialize the Boids flocking simulation."""
+    global _boids_x, _boids_y, _boids_vx, _boids_vy, _boids_n
+    global _boids_visual_range, _boids_sep_dist, _boids_max_speed
+    global _boids_sep_w, _boids_ali_w, _boids_coh_w
+    global _boids_world_w, _boids_world_h, _boids_rows, _boids_cols, _boids_preset_idx
+    global _boids_pred_x, _boids_pred_y, _boids_pred_vx, _boids_pred_vy
+    global _boids_n_pred, _boids_pred_range, _boids_pred_speed
+    global _boids_obstacles, _boids_turn_margin, _boids_turn_factor
+    import random as _rng
+
+    _boids_rows, _boids_cols = rows, cols
+    _boids_world_w = cols * 4.0
+    _boids_world_h = rows * 4.0
+
+    if preset_name is None:
+        preset_name = BOIDS_PRESET_NAMES[_boids_preset_idx]
+    elif preset_name in BOIDS_PRESETS:
+        _boids_preset_idx = BOIDS_PRESET_NAMES.index(preset_name)
+
+    p = BOIDS_PRESETS[preset_name]
+    _boids_n = p["n_boids"]
+    _boids_visual_range = p["visual_range"]
+    _boids_sep_dist = p["separation_dist"]
+    _boids_max_speed = p["max_speed"]
+    _boids_sep_w = p["separation_weight"]
+    _boids_ali_w = p["alignment_weight"]
+    _boids_coh_w = p["cohesion_weight"]
+    _boids_n_pred = p["n_predators"]
+    _boids_pred_range = p["predator_range"]
+    _boids_pred_speed = p["predator_speed"]
+    _boids_turn_margin = p["turn_margin"]
+    _boids_turn_factor = p["turn_factor"]
+
+    # Scatter boids randomly
+    _boids_x = [_rng.uniform(0, _boids_world_w) for _ in range(_boids_n)]
+    _boids_y = [_rng.uniform(0, _boids_world_h) for _ in range(_boids_n)]
+    angle = [_rng.uniform(0, 2 * math.pi) for _ in range(_boids_n)]
+    spd = _boids_max_speed * 0.5
+    _boids_vx = [math.cos(a) * spd for a in angle]
+    _boids_vy = [math.sin(a) * spd for a in angle]
+
+    # Predators
+    if _boids_n_pred > 0:
+        _boids_pred_x = [_rng.uniform(0, _boids_world_w) for _ in range(_boids_n_pred)]
+        _boids_pred_y = [_rng.uniform(0, _boids_world_h) for _ in range(_boids_n_pred)]
+        _boids_pred_vx = [_rng.uniform(-2, 2) for _ in range(_boids_n_pred)]
+        _boids_pred_vy = [_rng.uniform(-2, 2) for _ in range(_boids_n_pred)]
+    else:
+        _boids_pred_x = []
+        _boids_pred_y = []
+        _boids_pred_vx = []
+        _boids_pred_vy = []
+
+    # Obstacles (circular)
+    if p["obstacles"]:
+        w, h = _boids_world_w, _boids_world_h
+        _boids_obstacles = [
+            (w * 0.3, h * 0.3, min(w, h) * 0.08),
+            (w * 0.7, h * 0.6, min(w, h) * 0.10),
+            (w * 0.5, h * 0.8, min(w, h) * 0.06),
+        ]
+    else:
+        _boids_obstacles = []
+
+
+def _boids_step():
+    """Advance the Boids simulation by one tick (pure Python)."""
+    global _boids_x, _boids_y, _boids_vx, _boids_vy
+    global _boids_pred_x, _boids_pred_y, _boids_pred_vx, _boids_pred_vy
+    n = _boids_n
+    w, h = _boids_world_w, _boids_world_h
+    half_w, half_h = w * 0.5, h * 0.5
+    vr2 = _boids_visual_range * _boids_visual_range
+    sd2 = _boids_sep_dist * _boids_sep_dist
+    max_spd = _boids_max_speed
+    max_spd2 = max_spd * max_spd
+
+    for i in range(n):
+        xi, yi = _boids_x[i], _boids_y[i]
+        # Accumulate separation, alignment, cohesion
+        sep_x, sep_y = 0.0, 0.0
+        ali_vx, ali_vy = 0.0, 0.0
+        coh_x, coh_y = 0.0, 0.0
+        n_neighbors = 0
+
+        for j in range(n):
+            if i == j:
+                continue
+            dx = _boids_x[j] - xi
+            dy = _boids_y[j] - yi
+            # Toroidal wrap
+            if dx > half_w:
+                dx -= w
+            elif dx < -half_w:
+                dx += w
+            if dy > half_h:
+                dy -= h
+            elif dy < -half_h:
+                dy += h
+            d2 = dx * dx + dy * dy
+            if d2 < vr2:
+                n_neighbors += 1
+                ali_vx += _boids_vx[j]
+                ali_vy += _boids_vy[j]
+                coh_x += dx
+                coh_y += dy
+                if d2 < sd2:
+                    # Separation: steer away
+                    sep_x -= dx
+                    sep_y -= dy
+
+        # Apply rules
+        vxi, vyi = _boids_vx[i], _boids_vy[i]
+        vxi += sep_x * _boids_sep_w
+        vyi += sep_y * _boids_sep_w
+        if n_neighbors > 0:
+            # Alignment: steer toward average heading
+            ali_vx /= n_neighbors
+            ali_vy /= n_neighbors
+            vxi += (ali_vx - vxi) * _boids_ali_w
+            vyi += (ali_vy - vyi) * _boids_ali_w
+            # Cohesion: steer toward center of mass
+            coh_x /= n_neighbors
+            coh_y /= n_neighbors
+            vxi += coh_x * _boids_coh_w
+            vyi += coh_y * _boids_coh_w
+
+        # Flee from predators
+        for p_idx in range(_boids_n_pred):
+            dx = _boids_pred_x[p_idx] - xi
+            dy = _boids_pred_y[p_idx] - yi
+            if dx > half_w:
+                dx -= w
+            elif dx < -half_w:
+                dx += w
+            if dy > half_h:
+                dy -= h
+            elif dy < -half_h:
+                dy += h
+            d2 = dx * dx + dy * dy
+            pr2 = _boids_pred_range * _boids_pred_range
+            if d2 < pr2 and d2 > 0:
+                flee_str = 0.15
+                vxi -= dx * flee_str
+                vyi -= dy * flee_str
+
+        # Avoid obstacles
+        for (ox, oy, orad) in _boids_obstacles:
+            dx = ox - xi
+            dy = oy - yi
+            if dx > half_w:
+                dx -= w
+            elif dx < -half_w:
+                dx += w
+            if dy > half_h:
+                dy -= h
+            elif dy < -half_h:
+                dy += h
+            d2 = dx * dx + dy * dy
+            avoid_r = orad + _boids_sep_dist
+            if d2 < avoid_r * avoid_r and d2 > 0:
+                d = math.sqrt(d2)
+                vxi -= dx / d * 0.5
+                vyi -= dy / d * 0.5
+
+        # Turn at margins (bounded mode for some presets)
+        if _boids_turn_margin > 0:
+            tm = _boids_turn_margin
+            tf = _boids_turn_factor
+            if xi < tm:
+                vxi += tf
+            elif xi > w - tm:
+                vxi -= tf
+            if yi < tm:
+                vyi += tf
+            elif yi > h - tm:
+                vyi -= tf
+
+        # Clamp speed
+        spd2 = vxi * vxi + vyi * vyi
+        if spd2 > max_spd2:
+            scale = max_spd / math.sqrt(spd2)
+            vxi *= scale
+            vyi *= scale
+
+        _boids_vx[i] = vxi
+        _boids_vy[i] = vyi
+        _boids_x[i] = (xi + vxi) % w
+        _boids_y[i] = (yi + vyi) % h
+
+    # Update predators: chase nearest boid
+    for p_idx in range(_boids_n_pred):
+        px, py = _boids_pred_x[p_idx], _boids_pred_y[p_idx]
+        best_d2 = float('inf')
+        best_dx, best_dy = 0.0, 0.0
+        for i in range(n):
+            dx = _boids_x[i] - px
+            dy = _boids_y[i] - py
+            if dx > half_w:
+                dx -= w
+            elif dx < -half_w:
+                dx += w
+            if dy > half_h:
+                dy -= h
+            elif dy < -half_h:
+                dy += h
+            d2 = dx * dx + dy * dy
+            if d2 < best_d2:
+                best_d2 = d2
+                best_dx, best_dy = dx, dy
+        if best_d2 > 0:
+            d = math.sqrt(best_d2)
+            _boids_pred_vx[p_idx] += best_dx / d * 0.1
+            _boids_pred_vy[p_idx] += best_dy / d * 0.1
+        # Clamp predator speed
+        pvx, pvy = _boids_pred_vx[p_idx], _boids_pred_vy[p_idx]
+        ps2 = pvx * pvx + pvy * pvy
+        ps_max = _boids_pred_speed
+        if ps2 > ps_max * ps_max:
+            sc = ps_max / math.sqrt(ps2)
+            _boids_pred_vx[p_idx] = pvx * sc
+            _boids_pred_vy[p_idx] = pvy * sc
+        _boids_pred_x[p_idx] = (px + _boids_pred_vx[p_idx]) % w
+        _boids_pred_y[p_idx] = (py + _boids_pred_vy[p_idx]) % h
+
+
+def _boids_step_numpy():
+    """Vectorized Boids step using NumPy."""
+    global _boids_x, _boids_y, _boids_vx, _boids_vy
+    global _boids_pred_x, _boids_pred_y, _boids_pred_vx, _boids_pred_vy
+    n = _boids_n
+    w, h = _boids_world_w, _boids_world_h
+    vr = _boids_visual_range
+    sd = _boids_sep_dist
+    max_spd = _boids_max_speed
+
+    x = np.array(_boids_x)
+    y = np.array(_boids_y)
+    vx = np.array(_boids_vx)
+    vy = np.array(_boids_vy)
+
+    # Pairwise differences with toroidal wrap
+    dx = x[np.newaxis, :] - x[:, np.newaxis]
+    dy = y[np.newaxis, :] - y[:, np.newaxis]
+    dx = np.where(dx > w * 0.5, dx - w, np.where(dx < -w * 0.5, dx + w, dx))
+    dy = np.where(dy > h * 0.5, dy - h, np.where(dy < -h * 0.5, dy + h, dy))
+    d2 = dx * dx + dy * dy
+
+    # Neighbor mask (within visual range, excluding self)
+    np.fill_diagonal(d2, float('inf'))
+    neighbor = d2 < (vr * vr)
+    n_neighbors = neighbor.sum(axis=1).astype(float)
+    n_neighbors_safe = np.where(n_neighbors > 0, n_neighbors, 1.0)
+
+    # Separation: sum of -dx for close neighbors
+    close = d2 < (sd * sd)
+    sep_x = -(dx * close).sum(axis=1)
+    sep_y = -(dy * close).sum(axis=1)
+
+    # Alignment: average velocity of neighbors
+    ali_vx = (vx[np.newaxis, :] * neighbor).sum(axis=1) / n_neighbors_safe
+    ali_vy = (vy[np.newaxis, :] * neighbor).sum(axis=1) / n_neighbors_safe
+
+    # Cohesion: average position offset of neighbors
+    coh_x = (dx * neighbor).sum(axis=1) / n_neighbors_safe
+    coh_y = (dy * neighbor).sum(axis=1) / n_neighbors_safe
+
+    has_neighbors = n_neighbors > 0
+
+    new_vx = vx + sep_x * _boids_sep_w
+    new_vy = vy + sep_y * _boids_sep_w
+    new_vx += np.where(has_neighbors, (ali_vx - vx) * _boids_ali_w, 0.0)
+    new_vy += np.where(has_neighbors, (ali_vy - vy) * _boids_ali_w, 0.0)
+    new_vx += np.where(has_neighbors, coh_x * _boids_coh_w, 0.0)
+    new_vy += np.where(has_neighbors, coh_y * _boids_coh_w, 0.0)
+
+    # Flee from predators
+    for p_idx in range(_boids_n_pred):
+        pdx = _boids_pred_x[p_idx] - x
+        pdy = _boids_pred_y[p_idx] - y
+        pdx = np.where(pdx > w * 0.5, pdx - w, np.where(pdx < -w * 0.5, pdx + w, pdx))
+        pdy = np.where(pdy > h * 0.5, pdy - h, np.where(pdy < -h * 0.5, pdy + h, pdy))
+        pd2 = pdx * pdx + pdy * pdy
+        flee_mask = pd2 < (_boids_pred_range * _boids_pred_range)
+        new_vx -= np.where(flee_mask, pdx * 0.15, 0.0)
+        new_vy -= np.where(flee_mask, pdy * 0.15, 0.0)
+
+    # Avoid obstacles
+    for (ox, oy, orad) in _boids_obstacles:
+        odx = ox - x
+        ody = oy - y
+        odx = np.where(odx > w * 0.5, odx - w, np.where(odx < -w * 0.5, odx + w, odx))
+        ody = np.where(ody > h * 0.5, ody - h, np.where(ody < -h * 0.5, ody + h, ody))
+        od2 = odx * odx + ody * ody
+        avoid_r = orad + _boids_sep_dist
+        od = np.sqrt(np.where(od2 > 0, od2, 1.0))
+        omask = od2 < avoid_r * avoid_r
+        new_vx -= np.where(omask, odx / od * 0.5, 0.0)
+        new_vy -= np.where(omask, ody / od * 0.5, 0.0)
+
+    # Turn at margins
+    if _boids_turn_margin > 0:
+        tm = _boids_turn_margin
+        tf = _boids_turn_factor
+        new_vx += np.where(x < tm, tf, 0.0)
+        new_vx -= np.where(x > w - tm, tf, 0.0)
+        new_vy += np.where(y < tm, tf, 0.0)
+        new_vy -= np.where(y > h - tm, tf, 0.0)
+
+    # Clamp speed
+    spd = np.sqrt(new_vx * new_vx + new_vy * new_vy)
+    scale = np.where(spd > max_spd, max_spd / np.where(spd > 0, spd, 1.0), 1.0)
+    new_vx *= scale
+    new_vy *= scale
+
+    x = (x + new_vx) % w
+    y = (y + new_vy) % h
+
+    _boids_x = x.tolist()
+    _boids_y = y.tolist()
+    _boids_vx = new_vx.tolist()
+    _boids_vy = new_vy.tolist()
+
+    # Update predators
+    for p_idx in range(_boids_n_pred):
+        px, py = _boids_pred_x[p_idx], _boids_pred_y[p_idx]
+        pdx = x - px
+        pdy = y - py
+        pdx = np.where(pdx > w * 0.5, pdx - w, np.where(pdx < -w * 0.5, pdx + w, pdx))
+        pdy = np.where(pdy > h * 0.5, pdy - h, np.where(pdy < -h * 0.5, pdy + h, pdy))
+        pd2 = pdx * pdx + pdy * pdy
+        closest = np.argmin(pd2)
+        cd = math.sqrt(pd2[closest]) if pd2[closest] > 0 else 1.0
+        _boids_pred_vx[p_idx] += float(pdx[closest]) / cd * 0.1
+        _boids_pred_vy[p_idx] += float(pdy[closest]) / cd * 0.1
+        pvx, pvy = _boids_pred_vx[p_idx], _boids_pred_vy[p_idx]
+        ps = math.sqrt(pvx * pvx + pvy * pvy)
+        if ps > _boids_pred_speed:
+            sc = _boids_pred_speed / ps
+            _boids_pred_vx[p_idx] = pvx * sc
+            _boids_pred_vy[p_idx] = pvy * sc
+        _boids_pred_x[p_idx] = (px + _boids_pred_vx[p_idx]) % w
+        _boids_pred_y[p_idx] = (py + _boids_pred_vy[p_idx]) % h
+
+
+# Direction arrows for boid headings (8 directions + predator marker)
+_BOIDS_ARROWS = ["\u2192", "\u2197", "\u2191", "\u2196", "\u2190", "\u2199", "\u2193", "\u2198"]
+
+
+def _boids_heading_idx(vx, vy):
+    """Return 0-7 index for the 8-direction arrow based on velocity."""
+    angle = math.atan2(-vy, vx)  # negative vy because screen y is down
+    # Map [-pi, pi] to [0, 8)
+    idx = int((angle + math.pi) / (math.pi / 4) + 0.5) % 8
+    # Remap: 0=right, 1=up-right, 2=up, 3=up-left, 4=left, 5=down-left, 6=down, 7=down-right
+    remap = [4, 5, 6, 7, 0, 1, 2, 3]
+    return remap[idx]
+
+
+def _boids_to_grid(rows, cols):
+    """Project boids onto a 2D grid for display.
+
+    Cell values encode heading direction (1-8 for boids, 9 for predators,
+    10+ for obstacles).  0 = empty.
+    """
+    grid = [[0] * cols for _ in range(rows)]
+    scale_x = _boids_world_w
+    scale_y = _boids_world_h
+
+    # Draw obstacles first
+    if _boids_obstacles:
+        for (ox, oy, orad) in _boids_obstacles:
+            gc = int(ox / scale_x * cols) % cols
+            gr = int(oy / scale_y * rows) % rows
+            # Draw a small circle of cells
+            r_cells = max(1, int(orad / scale_x * cols))
+            for dy in range(-r_cells, r_cells + 1):
+                for dx in range(-r_cells, r_cells + 1):
+                    if dx * dx + dy * dy <= r_cells * r_cells:
+                        rr = (gr + dy) % rows
+                        cc = (gc + dx) % cols
+                        grid[rr][cc] = 10  # obstacle marker
+
+    # Draw boids with heading
+    for i in range(_boids_n):
+        gc = int(_boids_x[i] / scale_x * cols) % cols
+        gr = int(_boids_y[i] / scale_y * rows) % rows
+        heading = _boids_heading_idx(_boids_vx[i], _boids_vy[i])
+        grid[gr][gc] = heading + 1  # 1-8
+
+    # Draw predators
+    for p_idx in range(_boids_n_pred):
+        gc = int(_boids_pred_x[p_idx] / scale_x * cols) % cols
+        gr = int(_boids_pred_y[p_idx] / scale_y * rows) % rows
+        grid[gr][gc] = 9  # predator marker
+
+    return grid
+
+
+def _boids_color(val):
+    """Map a boids grid value to a curses color pair.
+
+    1-8 = boid heading directions (green/cyan), 9 = predator (red),
+    10 = obstacle (white/dim).
+    """
+    if val <= 0:
+        return 1       # empty — default
+    elif val <= 8:
+        return 1       # boid — green
+    elif val == 9:
+        return 21      # predator — red
+    else:
+        return 19      # obstacle — dim
+
+
 def parse_rule_string(rule_str):
     """Parse a rule string like 'B36/S23' into birth/survival sets."""
     rule_str = rule_str.upper().replace(" ", "")
@@ -4493,6 +5039,13 @@ def place_pattern(grid, name, row_off=None, col_off=None):
 def step(grid, rule=None):
     if rule is None:
         rule = RULES["life"]
+    if _is_boids(rule):
+        rows, cols = len(grid), len(grid[0])
+        if _HAS_NUMPY:
+            _boids_step_numpy()
+        else:
+            _boids_step()
+        return _boids_to_grid(rows, cols)
     if _is_fluid(rule):
         rows, cols = len(grid), len(grid[0])
         if _HAS_NUMPY:
@@ -5152,6 +5705,10 @@ def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=Fals
                 if gs:
                     cp = _grayscott_color(age)
                     counts[cp] = counts.get(cp, 0) + 1
+                elif boids:
+                    if age:
+                        cp = _boids_color(age)
+                        counts[cp] = counts.get(cp, 0) + 1
                 elif fluid:
                     cp = _lbm_color(age)
                     counts[cp] = counts.get(cp, 0) + 1
@@ -6561,6 +7118,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         chimera = _is_chimera(rule)
         particlelife = _is_particlelife(rule)
         fluid = _is_fluid(rule)
+        boids = _is_boids(rule)
 
         # Track population
         pop = _count_population(grid)
@@ -6779,7 +7337,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
             ff_str = f" | p={_ff_p_grow:.4f} f={_ff_f_lightning:.5f} [<>]preset" if forestfire else ""
             ising_str = f" | T={_ising_temperature:.3f} [t]cool [y]heat [<>]preset" if ising else ""
             chimera_str = f" | {CHIMERA_PRESETS[CHIMERA_PRESET_NAMES[_chimera_preset_idx]]['desc']} [<>]preset" if chimera else ""
-            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{topo_str}{hashlife_str}{gs_str}{eca_str}{turmite_str}{wator_str}{ff_str}{ising_str}{chimera_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [T]opo [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
+            boids_str = f" | {BOIDS_PRESETS[BOIDS_PRESET_NAMES[_boids_preset_idx]]['name']} n={_boids_n} [<>]preset" if boids else ""
+            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{topo_str}{hashlife_str}{gs_str}{eca_str}{turmite_str}{wator_str}{ff_str}{ising_str}{chimera_str}{boids_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [T]opo [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
@@ -7931,6 +8490,28 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 hist_idx = 0
                 browsing_history = False
                 pop_history = []
+            elif key == ord("<") and boids:
+                _boids_preset_idx = (_boids_preset_idx - 1) % len(BOIDS_PRESET_NAMES)
+                preset_name = BOIDS_PRESET_NAMES[_boids_preset_idx]
+                rule["name"] = f"Boids ({BOIDS_PRESETS[preset_name]['name']})"
+                _boids_init(rows, cols, preset_name)
+                grid = _boids_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord(">") and boids:
+                _boids_preset_idx = (_boids_preset_idx + 1) % len(BOIDS_PRESET_NAMES)
+                preset_name = BOIDS_PRESET_NAMES[_boids_preset_idx]
+                rule["name"] = f"Boids ({BOIDS_PRESETS[preset_name]['name']})"
+                _boids_init(rows, cols, preset_name)
+                grid = _boids_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
             elif key == ord("W") and eca:
                 # Enter a specific ECA rule number (0-255)
                 paused = True
@@ -8295,6 +8876,35 @@ def _save_module_state(rule):
             "_lbm_buoyancy": _lbm_buoyancy,
             "_lbm_temperature": copy.deepcopy(_lbm_temperature),
         })
+    elif _is_boids(rule):
+        state.update({
+            "_boids_x": copy.deepcopy(_boids_x),
+            "_boids_y": copy.deepcopy(_boids_y),
+            "_boids_vx": copy.deepcopy(_boids_vx),
+            "_boids_vy": copy.deepcopy(_boids_vy),
+            "_boids_n": _boids_n,
+            "_boids_visual_range": _boids_visual_range,
+            "_boids_sep_dist": _boids_sep_dist,
+            "_boids_max_speed": _boids_max_speed,
+            "_boids_sep_w": _boids_sep_w,
+            "_boids_ali_w": _boids_ali_w,
+            "_boids_coh_w": _boids_coh_w,
+            "_boids_world_w": _boids_world_w,
+            "_boids_world_h": _boids_world_h,
+            "_boids_rows": _boids_rows,
+            "_boids_cols": _boids_cols,
+            "_boids_preset_idx": _boids_preset_idx,
+            "_boids_pred_x": copy.deepcopy(_boids_pred_x),
+            "_boids_pred_y": copy.deepcopy(_boids_pred_y),
+            "_boids_pred_vx": copy.deepcopy(_boids_pred_vx),
+            "_boids_pred_vy": copy.deepcopy(_boids_pred_vy),
+            "_boids_n_pred": _boids_n_pred,
+            "_boids_pred_range": _boids_pred_range,
+            "_boids_pred_speed": _boids_pred_speed,
+            "_boids_obstacles": copy.deepcopy(_boids_obstacles),
+            "_boids_turn_margin": _boids_turn_margin,
+            "_boids_turn_factor": _boids_turn_factor,
+        })
     return state
 
 
@@ -8460,10 +9070,46 @@ def _restore_module_state(rule, state):
         _lbm_inflow_speed = state["_lbm_inflow_speed"]
         _lbm_buoyancy = state["_lbm_buoyancy"]
         _lbm_temperature = state["_lbm_temperature"]
+    elif _is_boids(rule):
+        global _boids_x, _boids_y, _boids_vx, _boids_vy, _boids_n
+        global _boids_visual_range, _boids_sep_dist, _boids_max_speed
+        global _boids_sep_w, _boids_ali_w, _boids_coh_w
+        global _boids_world_w, _boids_world_h, _boids_rows, _boids_cols, _boids_preset_idx
+        global _boids_pred_x, _boids_pred_y, _boids_pred_vx, _boids_pred_vy
+        global _boids_n_pred, _boids_pred_range, _boids_pred_speed
+        global _boids_obstacles, _boids_turn_margin, _boids_turn_factor
+        _boids_x = state["_boids_x"]
+        _boids_y = state["_boids_y"]
+        _boids_vx = state["_boids_vx"]
+        _boids_vy = state["_boids_vy"]
+        _boids_n = state["_boids_n"]
+        _boids_visual_range = state["_boids_visual_range"]
+        _boids_sep_dist = state["_boids_sep_dist"]
+        _boids_max_speed = state["_boids_max_speed"]
+        _boids_sep_w = state["_boids_sep_w"]
+        _boids_ali_w = state["_boids_ali_w"]
+        _boids_coh_w = state["_boids_coh_w"]
+        _boids_world_w = state["_boids_world_w"]
+        _boids_world_h = state["_boids_world_h"]
+        _boids_rows = state["_boids_rows"]
+        _boids_cols = state["_boids_cols"]
+        _boids_preset_idx = state["_boids_preset_idx"]
+        _boids_pred_x = state["_boids_pred_x"]
+        _boids_pred_y = state["_boids_pred_y"]
+        _boids_pred_vx = state["_boids_pred_vx"]
+        _boids_pred_vy = state["_boids_pred_vy"]
+        _boids_n_pred = state["_boids_n_pred"]
+        _boids_pred_range = state["_boids_pred_range"]
+        _boids_pred_speed = state["_boids_pred_speed"]
+        _boids_obstacles = state["_boids_obstacles"]
+        _boids_turn_margin = state["_boids_turn_margin"]
+        _boids_turn_factor = state["_boids_turn_factor"]
 
 
 def _cell_color_pair(age, rule):
     """Return the curses color-pair number for a cell value under *rule*."""
+    if _is_boids(rule):
+        return _boids_color(age)
     if _is_fluid(rule):
         return _lbm_color(age)
     if _is_particlelife(rule):
@@ -8495,6 +9141,16 @@ def _cell_color_pair(age, rule):
 
 def _cell_str(age, rule):
     """Return the two-char display string for a cell value under *rule*."""
+    if _is_boids(rule):
+        if age <= 0:
+            return "  "
+        elif age <= 8:
+            arrow = _BOIDS_ARROWS[age - 1]
+            return arrow + " "
+        elif age == 9:
+            return "\u25c6 "  # predator diamond
+        else:
+            return "\u2588\u2588"  # obstacle
     if _is_fluid(rule):
         return "\u2588\u2588"
     if _is_particlelife(rule):
@@ -9566,6 +10222,13 @@ def main():
              "Options: " + ", ".join(LBM_PRESETS.keys()),
     )
     parser.add_argument(
+        "--boids-preset",
+        choices=list(BOIDS_PRESETS.keys()),
+        default="flock",
+        help="Boids preset when --rule boids (default: flock). "
+             "Options: " + ", ".join(BOIDS_PRESETS.keys()),
+    )
+    parser.add_argument(
         "--discover",
         action="store_true",
         default=False,
@@ -9643,7 +10306,7 @@ def main():
     )
     args = parser.parse_args()
 
-    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx, _fs_preset_idx, _sp_preset_idx, _dla_preset_idx, _ff_preset_idx, _chimera_preset_idx, _pl_preset_idx, _lbm_preset_idx
+    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx, _fs_preset_idx, _sp_preset_idx, _dla_preset_idx, _ff_preset_idx, _chimera_preset_idx, _pl_preset_idx, _lbm_preset_idx, _boids_preset_idx
 
     # Headless batch-render mode: output PNG frames without terminal UI
     if args.render is not None:
@@ -9762,6 +10425,9 @@ def main():
             elif _is_fluid(rule):
                 _lbm_init(r, c)
                 g = _lbm_to_grid(r, c)
+            elif _is_boids(rule):
+                _boids_init(r, c)
+                g = _boids_to_grid(r, c)
             else:
                 place_pattern(g, args.pattern)
             return g
@@ -9952,6 +10618,14 @@ def main():
             rule["name"] = f"LBM Fluid ({preset['name']})"
         _lbm_init(args.rows, args.cols, fluid_preset_name)
         grid = _lbm_to_grid(args.rows, args.cols)
+    elif args.rule.lower() == "boids":
+        boids_preset_name = args.boids_preset
+        if boids_preset_name in BOIDS_PRESETS:
+            _boids_preset_idx = BOIDS_PRESET_NAMES.index(boids_preset_name)
+            preset = BOIDS_PRESETS[boids_preset_name]
+            rule["name"] = f"Boids ({preset['name']})"
+        _boids_init(args.rows, args.cols, boids_preset_name)
+        grid = _boids_to_grid(args.rows, args.cols)
     elif args.rule.lower() == "sandpile":
         # Abelian Sandpile self-organized criticality
         sp_preset_name = args.sandpile_preset
