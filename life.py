@@ -4,6 +4,7 @@
 import argparse
 import copy
 import curses
+import os
 import time
 
 # --- Starter Patterns (relative coordinates) ---
@@ -42,6 +43,103 @@ PATTERNS = {
     ],
     "random": [],  # handled specially
 }
+
+
+CELLS_DIR = os.path.expanduser("~/.life-patterns")
+
+
+def save_cells(grid, filepath):
+    """Save grid to a .cells plaintext file."""
+    os.makedirs(os.path.dirname(filepath) if os.path.dirname(filepath) else ".", exist_ok=True)
+    rows, cols = len(grid), len(grid[0])
+    # Find bounding box of live cells to trim empty borders
+    min_r = min_c = float("inf")
+    max_r = max_c = float("-inf")
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r][c]:
+                min_r = min(min_r, r)
+                max_r = max(max_r, r)
+                min_c = min(min_c, c)
+                max_c = max(max_c, c)
+    with open(filepath, "w") as f:
+        f.write(f"!Name: {os.path.splitext(os.path.basename(filepath))[0]}\n")
+        if min_r == float("inf"):
+            # Empty grid
+            f.write(".\n")
+            return
+        for r in range(min_r, max_r + 1):
+            line = ""
+            for c in range(min_c, max_c + 1):
+                line += "O" if grid[r][c] else "."
+            f.write(line.rstrip(".") + "\n")
+
+
+def load_cells(filepath, rows, cols):
+    """Load a .cells plaintext file into a new grid, centred."""
+    pattern_rows = []
+    with open(filepath, "r") as f:
+        for line in f:
+            line = line.rstrip("\n\r")
+            if line.startswith("!"):
+                continue
+            row = []
+            for ch in line:
+                if ch == "O":
+                    row.append(1)
+                else:
+                    row.append(0)
+            pattern_rows.append(row)
+    if not pattern_rows:
+        return make_grid(rows, cols)
+    p_rows = len(pattern_rows)
+    p_cols = max(len(r) for r in pattern_rows)
+    grid = make_grid(rows, cols)
+    off_r = (rows - p_rows) // 2
+    off_c = (cols - p_cols) // 2
+    for r, row in enumerate(pattern_rows):
+        for c, val in enumerate(row):
+            nr, nc = r + off_r, c + off_c
+            if 0 <= nr < rows and 0 <= nc < cols:
+                grid[nr][nc] = val
+    return grid
+
+
+def curses_input(stdscr, prompt, max_y, max_x):
+    """Get a line of text input from the user in curses."""
+    curses.curs_set(1)
+    stdscr.nodelay(False)
+    buf = ""
+    while True:
+        # Draw prompt
+        try:
+            stdscr.move(max_y - 1, 0)
+            stdscr.clrtoeol()
+            display = (prompt + buf)[:max_x - 1]
+            stdscr.addstr(max_y - 1, 0, display, curses.color_pair(2) | curses.A_REVERSE)
+        except curses.error:
+            pass
+        stdscr.refresh()
+        key = stdscr.getch()
+        if key in (ord("\n"), curses.KEY_ENTER):
+            break
+        elif key == 27:  # Escape
+            buf = ""
+            break
+        elif key in (curses.KEY_BACKSPACE, 127, 8):
+            buf = buf[:-1]
+        elif 32 <= key <= 126:
+            buf += chr(key)
+    curses.curs_set(0)
+    stdscr.nodelay(True)
+    return buf
+
+
+def list_saved_patterns():
+    """Return list of .cells files in the patterns directory."""
+    if not os.path.isdir(CELLS_DIR):
+        return []
+    return sorted(f for f in os.listdir(CELLS_DIR) if f.endswith(".cells"))
 
 
 def make_grid(rows, cols):
@@ -135,7 +233,7 @@ def run(stdscr, grid, speed):
 
         # Status bar
         if editing:
-            status = f" EDITOR ({cursor_r},{cursor_c}) | Gen {generation} | [arrows]move [enter/space]toggle [c]lear [e]exit editor [q]uit"
+            status = f" EDITOR ({cursor_r},{cursor_c}) | Gen {generation} | [arrows]move [enter/space]toggle [s]ave [l]oad [c]lear [e]exit editor [q]uit"
         else:
             status = f" Gen {generation} | Delay {delay:.2f}s | {'PAUSED' if paused else 'Running'} | [space]pause [e]dit [+/-]speed [r]andom [n]ext [q]uit"
         try:
@@ -167,6 +265,56 @@ def run(stdscr, grid, speed):
                     for c2 in range(cols):
                         grid[r2][c2] = 0
                 generation = 0
+            elif key == ord("s"):
+                max_y, max_x = stdscr.getmaxyx()
+                name = curses_input(stdscr, "Save as (name, no ext): ", max_y, max_x)
+                if name:
+                    os.makedirs(CELLS_DIR, exist_ok=True)
+                    filepath = os.path.join(CELLS_DIR, name + ".cells")
+                    save_cells(grid, filepath)
+            elif key == ord("l"):
+                max_y, max_x = stdscr.getmaxyx()
+                patterns = list_saved_patterns()
+                if patterns:
+                    # Show pattern picker
+                    sel = 0
+                    picking = True
+                    stdscr.nodelay(False)
+                    while picking:
+                        stdscr.erase()
+                        try:
+                            stdscr.addstr(0, 0, "Load pattern (arrows to select, enter to load, esc to cancel):",
+                                          curses.color_pair(2))
+                        except curses.error:
+                            pass
+                        for i, p in enumerate(patterns):
+                            if i + 2 >= max_y - 1:
+                                break
+                            attr = curses.A_REVERSE if i == sel else 0
+                            try:
+                                stdscr.addstr(i + 2, 2, p, attr)
+                            except curses.error:
+                                pass
+                        stdscr.refresh()
+                        pk = stdscr.getch()
+                        if pk == curses.KEY_UP:
+                            sel = (sel - 1) % len(patterns)
+                        elif pk == curses.KEY_DOWN:
+                            sel = (sel + 1) % len(patterns)
+                        elif pk in (ord("\n"), curses.KEY_ENTER):
+                            filepath = os.path.join(CELLS_DIR, patterns[sel])
+                            grid = load_cells(filepath, rows, cols)
+                            generation = 0
+                            picking = False
+                        elif pk == 27:
+                            picking = False
+                    stdscr.nodelay(True)
+                else:
+                    # No saved patterns; prompt for a file path
+                    path = curses_input(stdscr, "Load file path: ", max_y, max_x)
+                    if path and os.path.isfile(path):
+                        grid = load_cells(path, rows, cols)
+                        generation = 0
             elif key == ord("e"):
                 editing = False
         else:
@@ -208,10 +356,27 @@ def main():
         default="glider",
         help="Starter pattern (default: glider)",
     )
+    parser.add_argument(
+        "--load",
+        type=str,
+        default=None,
+        help="Load a .cells file (path or name from ~/.life-patterns/)",
+    )
     args = parser.parse_args()
 
     grid = make_grid(args.rows, args.cols)
-    place_pattern(grid, args.pattern)
+    if args.load:
+        path = args.load
+        # If it's just a name, look in the patterns directory
+        if not os.path.isfile(path):
+            candidate = os.path.join(CELLS_DIR, path)
+            if not candidate.endswith(".cells"):
+                candidate += ".cells"
+            if os.path.isfile(candidate):
+                path = candidate
+        grid = load_cells(path, args.rows, args.cols)
+    else:
+        place_pattern(grid, args.pattern)
     curses.wrapper(lambda stdscr: run(stdscr, grid, args.speed))
 
 
