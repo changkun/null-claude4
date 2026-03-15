@@ -1,6 +1,6 @@
 # Cellular Automaton — Terminal Simulator
 
-A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, and supports arbitrary rules via B/S notation.
+A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, and supports arbitrary rules via B/S notation.
 
 ## Usage
 
@@ -31,6 +31,8 @@ python3 life.py --rule wator                          # Wa-Tor predator-prey eco
 python3 life.py --rule wator --wator-preset volatile  # fast boom-bust population cycles
 python3 life.py --rule fallingsand                     # Falling Sand particle simulation
 python3 life.py --rule fallingsand --fallingsand-preset volcano # volcanic eruption scene
+python3 life.py --rule physarum                        # Physarum slime mold (dendritic)
+python3 life.py --rule physarum --physarum-preset network # efficient transport paths
 python3 life.py --script probabilistic_life        # run a user script on startup
 python3 life.py --script ~/my_script.py            # run a script from a file path
 python3 life.py --discover                         # evolve interesting rulesets via GA
@@ -48,13 +50,14 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--speed`   | 0.1       | Delay between generations (seconds)  |
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
 | `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
-| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, or B/S notation (e.g. `B36/S23`) |
+| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, `fallingsand`, `physarum`, or B/S notation (e.g. `B36/S23`) |
 | `--gs-preset` | `mitosis` | Gray-Scott parameter preset (`mitosis`, `coral`, `solitons`, `maze`, `spots`, `worms`, `waves`, `bubbles`) |
 | `--lenia-preset` | `orbium` | Lenia species preset (`orbium`, `geminium`, `scutium`, `hydrogeminium`, `wanderer`, `smooth_life`) |
 | `--eca-rule` | 30        | Wolfram rule number (0–255) for Elementary CA mode |
 | `--turmite-preset` | `langton` | Turmite preset (`langton`, `highway4`, `llrr`, `lrrl`, `rllr`, `spiral`, `fibonacci`, `turmite_1`) |
 | `--wator-preset` | `classic` | Wa-Tor ecosystem preset (`classic`, `fast_breed`, `sparse`, `sharks_rule`, `volatile`, `equilibrium`) |
 | `--fallingsand-preset` | `hourglass` | Falling Sand preset (`hourglass`, `rain`, `volcano`, `garden`, `sandbox`, `cascade`) |
+| `--physarum-preset` | `dendritic` | Physarum slime mold preset (`dendritic`, `fungal`, `network`, `rings`, `tendrils`, `lattice`) |
 | `--script`  | —         | Run a Python script on startup (path or name from `~/.life-scripts/`) |
 | `--discover` | off      | Launch genetic algorithm rule discovery mode |
 | `--ga-generations` | 50 | Number of GA generations in discovery mode |
@@ -83,7 +86,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `B`       | Toggle Braille high-density rendering |
 | `T`       | Cycle topology (Torus → Klein Bottle → Möbius Strip → Bounded) |
 | `H`       | Toggle HashLife hyperspeed mode   |
-| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode |
+| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode; cycle Falling Sand presets in Falling Sand mode; cycle Physarum presets in Physarum mode |
 | `W`       | Enter a specific Wolfram rule number (0–255) in Elementary CA mode |
 | `G`       | Export history as animated GIF    |
 | `L`       | Load and run a script             |
@@ -169,6 +172,7 @@ All rules use Birth/Survival notation — a cell is born if it has exactly B nei
 | `turmite`  | *(agent-based)* | Langton's Ant & turmites — see [Langton's Ant](#langtons-ant--turmites) below |
 | `wator`    | *(ecosystem)* | Predator-prey dynamics — see [Wa-Tor](#wa-tor-predator-prey-ecosystem) below |
 | `fallingsand` | *(particle physics)* | Gravity-driven sandbox — see [Falling Sand](#falling-sand-particle-simulation) below |
+| `physarum`   | *(chemotaxis)* | Slime mold transport networks — see [Physarum](#physarum-slime-mold-transport-network) below |
 
 Use `--rule <preset>` or `--rule B.../S...` for custom rules. Press `R` at runtime to cycle through presets.
 
@@ -493,6 +497,60 @@ Press `<` / `>` at runtime to cycle through presets:
 
 - **HashLife** — incompatible (particle physics simulation). Switching to Falling Sand via `R` auto-deactivates HashLife.
 - **Randomize** (`r`) — re-initializes the grid with the current preset.
+- **Status bar** — shows the current preset name.
+
+## Physarum Slime Mold Transport Network
+
+Physarum is an agent-based chemotaxis simulation inspired by *Physarum polycephalum* (slime mold). Thousands of particles move across a 2D trail map: each agent senses the chemical trail concentration at three positions (left, center, right), rotates toward the strongest signal, deposits more trail chemical, and advances one step. The trail map undergoes diffusion and decay each tick. The result is stunningly organic vein-like networks that self-organize into efficient transport structures — the project's first chemotaxis-driven simulation.
+
+### Starting Physarum
+
+```bash
+python3 life.py --rule physarum                              # default dendritic preset
+python3 life.py --rule physarum --physarum-preset fungal      # sprawling fungal bloom
+python3 life.py --rule physarum --physarum-preset network     # efficient paths between food nodes
+```
+
+### Presets
+
+Press `<` / `>` at runtime to cycle through presets. Each configures sensor angle, sensor distance, turn speed, deposit rate, decay rate, diffusion kernel, and initial seed pattern:
+
+| Preset      | Character |
+|-------------|-----------|
+| `dendritic` | Tight vein-like structures — narrow dendritic branches radiating from a center cluster |
+| `fungal`    | Sprawling bloom — wide sensor angles produce diffuse, organic fungal growth |
+| `network`   | Efficient transport paths — agents connect food nodes with shortest-path networks |
+| `rings`     | Pulsing concentric bands — high deposit and decay create rhythmic ring patterns |
+| `tendrils`  | Sparse reaching tendrils — few agents with long sensor reach explore outward |
+| `lattice`   | Ordered grid structure — tight parameters produce regular lattice-like patterns |
+
+### How It Works
+
+1. **Agents** occupy positions on the continuous (floating-point) grid. Each has a heading angle.
+2. **Sense** — each agent samples the trail map at three points: left (heading − sensor_angle), center (heading), and right (heading + sensor_angle), each at sensor_distance ahead.
+3. **Rotate** — the agent turns toward the direction with the highest trail concentration. If center is strongest, no turn. If left/right tie, the agent picks randomly.
+4. **Move** — the agent advances one step in its current heading direction, wrapping at grid edges.
+5. **Deposit** — the agent deposits chemical at its new position, strengthening the trail.
+6. **Diffuse & decay** — the entire trail map is blurred (3×3 mean filter weighted by diffuse_k) and then decayed (multiplied by 1 − decay_rate), causing old trails to fade.
+
+### Seed Patterns
+
+| Seed           | Description |
+|----------------|-------------|
+| `center_circle` | Agents clustered in a circle at the grid center — produces radial branching |
+| `scatter`       | Agents randomly distributed across the entire grid — produces global network formation |
+| `food_nodes`    | Agents clustered at several discrete nodes — produces connecting transport paths |
+
+### Rendering
+
+- **Terminal** — trail concentration is mapped to the continuous gradient colormap (blue → cyan → green → white), shared with Gray-Scott and Lenia.
+- **PNG** — smooth 6-stop RGB gradient: black → blue → cyan → green → yellow → white.
+- **Braille** — supported; color chosen by majority vote of the 2×4 block.
+
+### Interactions
+
+- **HashLife** — incompatible (agent-based simulation). Switching to Physarum mode auto-deactivates HashLife.
+- **Randomize** (`r`) — re-initializes agents and trail map with the current preset.
 - **Status bar** — shows the current preset name.
 
 ## Population Statistics Dashboard

@@ -43,6 +43,7 @@ RULES = {
     "turmite":    {"b": set(), "s": set(), "name": "Langton's Ant", "turmite": True},
     "wator":      {"b": set(), "s": set(), "name": "Wa-Tor (Classic)", "wator": True},
     "fallingsand": {"b": set(), "s": set(), "name": "Falling Sand", "fallingsand": True},
+    "physarum": {"b": set(), "s": set(), "name": "Physarum (dendritic)", "physarum": True},
 }
 
 RULE_NAMES = list(RULES.keys())
@@ -148,6 +149,11 @@ def _is_wator(rule):
 def _is_fallingsand(rule):
     """Check if the current rule is the Falling Sand particle simulation."""
     return rule.get("fallingsand", False)
+
+
+def _is_physarum(rule):
+    """Check if the current rule is the Physarum slime mold simulation."""
+    return rule.get("physarum", False)
 
 
 # --- Wa-Tor Predator-Prey Ecosystem ---
@@ -1224,6 +1230,323 @@ def _step_grayscott_python():
             new_v[r][c] = max(0.0, min(1.0, v + (GS_DV * lap_v + uvv - (_gs_feed + _gs_kill) * v) * GS_DT))
     _gs_u = new_u
     _gs_v = new_v
+
+
+# --- Physarum: Slime Mold Transport Network ---
+# Agent-based model inspired by Physarum polycephalum.  Thousands of particles
+# (agents) move across a 2D trail map.  Each agent senses the trail
+# concentration ahead at three positions (left, center, right), rotates toward
+# the strongest signal, deposits trail chemical, and advances one step.
+# The trail map undergoes diffusion and decay each tick, creating organic
+# vein-like transport networks that self-organize into efficient structures.
+
+PHYSARUM_PRESETS = {
+    "dendritic": {
+        "name": "Dendritic (tight veins)",
+        "sensor_angle": 22.5,   # degrees
+        "sensor_dist": 9,
+        "turn_speed": 45.0,     # degrees per step
+        "deposit": 5.0,
+        "decay": 0.1,
+        "diffuse_k": 0.1,      # fraction diffused to neighbors
+        "agent_pct": 0.15,      # fraction of cells occupied by agents
+        "seed": "center_circle",
+    },
+    "fungal": {
+        "name": "Fungal bloom (sprawling)",
+        "sensor_angle": 45.0,
+        "sensor_dist": 5,
+        "turn_speed": 22.5,
+        "deposit": 5.0,
+        "decay": 0.05,
+        "diffuse_k": 0.15,
+        "agent_pct": 0.10,
+        "seed": "scatter",
+    },
+    "network": {
+        "name": "Network (efficient paths)",
+        "sensor_angle": 30.0,
+        "sensor_dist": 12,
+        "turn_speed": 60.0,
+        "deposit": 5.0,
+        "decay": 0.15,
+        "diffuse_k": 0.05,
+        "agent_pct": 0.12,
+        "seed": "food_nodes",
+    },
+    "rings": {
+        "name": "Rings (pulsing bands)",
+        "sensor_angle": 60.0,
+        "sensor_dist": 7,
+        "turn_speed": 10.0,
+        "deposit": 8.0,
+        "decay": 0.2,
+        "diffuse_k": 0.2,
+        "agent_pct": 0.20,
+        "seed": "center_circle",
+    },
+    "tendrils": {
+        "name": "Tendrils (sparse reaching)",
+        "sensor_angle": 15.0,
+        "sensor_dist": 15,
+        "turn_speed": 35.0,
+        "deposit": 4.0,
+        "decay": 0.08,
+        "diffuse_k": 0.08,
+        "agent_pct": 0.05,
+        "seed": "scatter",
+    },
+    "lattice": {
+        "name": "Lattice (ordered grid)",
+        "sensor_angle": 90.0,
+        "sensor_dist": 4,
+        "turn_speed": 90.0,
+        "deposit": 5.0,
+        "decay": 0.12,
+        "diffuse_k": 0.1,
+        "agent_pct": 0.15,
+        "seed": "scatter",
+    },
+}
+
+PHYSARUM_PRESET_NAMES = list(PHYSARUM_PRESETS.keys())
+
+# Module-level Physarum state
+_phys_trail = None          # 2D float array — trail concentration
+_phys_agents = None         # list of (row, col, angle_radians) floats
+_phys_rows = 0
+_phys_cols = 0
+_phys_preset_idx = 0
+_phys_sensor_angle = 22.5
+_phys_sensor_dist = 9
+_phys_turn_speed = 45.0
+_phys_deposit = 5.0
+_phys_decay = 0.1
+_phys_diffuse_k = 0.1
+
+
+def _phys_apply_preset(name):
+    """Apply a Physarum preset's parameters to module-level state."""
+    global _phys_sensor_angle, _phys_sensor_dist, _phys_turn_speed
+    global _phys_deposit, _phys_decay, _phys_diffuse_k
+    p = PHYSARUM_PRESETS[name]
+    _phys_sensor_angle = p["sensor_angle"]
+    _phys_sensor_dist = p["sensor_dist"]
+    _phys_turn_speed = p["turn_speed"]
+    _phys_deposit = p["deposit"]
+    _phys_decay = p["decay"]
+    _phys_diffuse_k = p["diffuse_k"]
+
+
+def _phys_init(rows, cols, preset_name=None):
+    """Initialize the Physarum trail map and agent population."""
+    import random as _rnd
+    global _phys_trail, _phys_agents, _phys_rows, _phys_cols, _phys_preset_idx
+
+    if preset_name is None:
+        preset_name = PHYSARUM_PRESET_NAMES[_phys_preset_idx]
+    _phys_apply_preset(preset_name)
+    preset = PHYSARUM_PRESETS[preset_name]
+    _phys_rows = rows
+    _phys_cols = cols
+
+    if _HAS_NUMPY:
+        _phys_trail = np.zeros((rows, cols), dtype=np.float64)
+    else:
+        _phys_trail = [[0.0] * cols for _ in range(rows)]
+
+    # Create agents
+    num_agents = max(1, int(rows * cols * preset["agent_pct"]))
+    seed = preset.get("seed", "scatter")
+    _phys_agents = []
+    TWO_PI = 2.0 * math.pi
+
+    if seed == "center_circle":
+        cr, cc = rows / 2.0, cols / 2.0
+        radius = min(rows, cols) / 6.0
+        for _ in range(num_agents):
+            a = _rnd.random() * TWO_PI
+            r_off = _rnd.random() * radius
+            ar = cr + math.sin(a) * r_off
+            ac = cc + math.cos(a) * r_off
+            ar = ar % rows
+            ac = ac % cols
+            _phys_agents.append([ar, ac, _rnd.random() * TWO_PI])
+    elif seed == "food_nodes":
+        # Place agents in several clusters to form networks between them
+        n_nodes = max(3, min(8, (rows * cols) // 1500))
+        centers = []
+        for _ in range(n_nodes):
+            centers.append((_rnd.randint(rows // 6, rows * 5 // 6),
+                            _rnd.randint(cols // 6, cols * 5 // 6)))
+        per_node = num_agents // n_nodes
+        for cx, cy in centers:
+            for _ in range(per_node):
+                ar = (cx + _rnd.gauss(0, min(rows, cols) / 12.0)) % rows
+                ac = (cy + _rnd.gauss(0, min(rows, cols) / 12.0)) % cols
+                _phys_agents.append([ar, ac, _rnd.random() * TWO_PI])
+        # Remainder agents scattered
+        for _ in range(num_agents - per_node * n_nodes):
+            _phys_agents.append([_rnd.random() * rows,
+                                 _rnd.random() * cols,
+                                 _rnd.random() * TWO_PI])
+    else:  # scatter
+        for _ in range(num_agents):
+            _phys_agents.append([_rnd.random() * rows,
+                                 _rnd.random() * cols,
+                                 _rnd.random() * TWO_PI])
+
+
+def _phys_step():
+    """Advance the Physarum simulation by one tick."""
+    global _phys_trail, _phys_agents
+    if _phys_trail is None or _phys_agents is None:
+        return
+
+    rows = _phys_rows
+    cols = _phys_cols
+    sa_rad = math.radians(_phys_sensor_angle)
+    ts_rad = math.radians(_phys_turn_speed)
+    sd = _phys_sensor_dist
+    dep = _phys_deposit
+    decay = _phys_decay
+    dk = _phys_diffuse_k
+
+    if _HAS_NUMPY:
+        _phys_step_numpy(rows, cols, sa_rad, ts_rad, sd, dep, decay, dk)
+    else:
+        _phys_step_python(rows, cols, sa_rad, ts_rad, sd, dep, decay, dk)
+
+
+def _phys_step_numpy(rows, cols, sa_rad, ts_rad, sd, dep, decay, dk):
+    """Physarum step with NumPy-accelerated diffusion."""
+    global _phys_trail, _phys_agents
+    import random as _rnd
+
+    trail = _phys_trail
+
+    # --- Agent sense-rotate-deposit-move ---
+    for agent in _phys_agents:
+        ar, ac, angle = agent[0], agent[1], agent[2]
+
+        # Sense at three positions: left, center, right
+        def _sense(a):
+            sr = (ar + math.sin(a) * sd) % rows
+            sc = (ac + math.cos(a) * sd) % cols
+            return trail[int(sr)][int(sc)]
+
+        s_left = _sense(angle - sa_rad)
+        s_center = _sense(angle)
+        s_right = _sense(angle + sa_rad)
+
+        # Rotate toward strongest signal
+        if s_center >= s_left and s_center >= s_right:
+            pass  # keep going straight
+        elif s_left > s_right:
+            angle -= ts_rad
+        elif s_right > s_left:
+            angle += ts_rad
+        else:
+            # left == right and both > center: pick randomly
+            angle += ts_rad if _rnd.random() < 0.5 else -ts_rad
+
+        # Move forward
+        nr = (ar + math.sin(angle)) % rows
+        nc = (ac + math.cos(angle)) % cols
+        agent[0] = nr
+        agent[1] = nc
+        agent[2] = angle
+
+        # Deposit trail at new position
+        ri, ci = int(nr), int(nc)
+        trail[ri][ci] += dep
+
+    # --- Diffusion (3x3 mean filter blend) ---
+    kernel = np.ones((3, 3), dtype=np.float64) / 9.0
+    blurred = convolve2d(trail, kernel, mode="same", boundary="wrap")
+    _phys_trail = trail * (1.0 - dk) + blurred * dk
+
+    # --- Decay ---
+    _phys_trail = np.maximum(_phys_trail - decay, 0.0)
+
+
+def _phys_step_python(rows, cols, sa_rad, ts_rad, sd, dep, decay, dk):
+    """Physarum step using pure Python — cell by cell."""
+    global _phys_trail, _phys_agents
+    import random as _rnd
+
+    trail = _phys_trail
+
+    # --- Agent sense-rotate-deposit-move ---
+    for agent in _phys_agents:
+        ar, ac, angle = agent[0], agent[1], agent[2]
+
+        def _sense(a):
+            sr = int(ar + math.sin(a) * sd) % rows
+            sc = int(ac + math.cos(a) * sd) % cols
+            return trail[sr][sc]
+
+        s_left = _sense(angle - sa_rad)
+        s_center = _sense(angle)
+        s_right = _sense(angle + sa_rad)
+
+        if s_center >= s_left and s_center >= s_right:
+            pass
+        elif s_left > s_right:
+            angle -= ts_rad
+        elif s_right > s_left:
+            angle += ts_rad
+        else:
+            angle += ts_rad if _rnd.random() < 0.5 else -ts_rad
+
+        nr = (ar + math.sin(angle)) % rows
+        nc = (ac + math.cos(angle)) % cols
+        agent[0] = nr
+        agent[1] = nc
+        agent[2] = angle
+
+        ri, ci = int(nr), int(nc)
+        trail[ri][ci] += dep
+
+    # --- Diffusion ---
+    new_trail = [[0.0] * cols for _ in range(rows)]
+    w_self = 1.0 - dk
+    w_nb = dk / 9.0
+    for r in range(rows):
+        for c in range(cols):
+            total = 0.0
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    total += trail[(r + dr) % rows][(c + dc) % cols]
+            new_trail[r][c] = trail[r][c] * w_self + total * w_nb
+
+    # --- Decay ---
+    for r in range(rows):
+        for c in range(cols):
+            new_trail[r][c] = max(0.0, new_trail[r][c] - decay)
+    _phys_trail = new_trail
+
+
+def _phys_to_grid(rows, cols):
+    """Convert Physarum trail map to an integer grid (0-100) for display."""
+    grid = make_grid(rows, cols)
+    if _phys_trail is None:
+        return grid
+    if _HAS_NUMPY:
+        t = np.array(_phys_trail)
+        max_t = max(t.max(), 0.001)
+        quantized = np.clip((t / max_t * 100), 0, 100).astype(int)
+        return quantized.tolist()
+    else:
+        max_t = 0.001
+        for r in range(rows):
+            for c in range(cols):
+                if _phys_trail[r][c] > max_t:
+                    max_t = _phys_trail[r][c]
+        for r in range(rows):
+            for c in range(cols):
+                grid[r][c] = max(0, min(100, int(_phys_trail[r][c] / max_t * 100)))
+        return grid
 
 
 # --- Lenia: Continuous Smooth-Kernel Cellular Automata ---
@@ -2324,6 +2647,10 @@ def place_pattern(grid, name, row_off=None, col_off=None):
 def step(grid, rule=None):
     if rule is None:
         rule = RULES["life"]
+    if _is_physarum(rule):
+        rows, cols = len(grid), len(grid[0])
+        _phys_step()
+        return _phys_to_grid(rows, cols)
     if _is_fallingsand(rule):
         rows, cols = len(grid), len(grid[0])
         _fs_step()
@@ -3466,6 +3793,7 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
     gs = _is_grayscott(rule)
     ln = _is_lenia(rule)
     tm = _is_turmite(rule)
+    ph = _is_physarum(rule)
 
     # Initialize grid
     grid = make_grid(rows, cols)
@@ -3480,6 +3808,9 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
         grid, loaded_ww = _load_pattern_file(path, rows, cols)
         if loaded_ww:
             ww = True
+    elif ph:
+        _phys_init(rows, cols)
+        grid = _phys_to_grid(rows, cols)
     elif tm:
         _turmite_init(rows, cols)
         grid = _turmite_to_grid(rows, cols)
@@ -3507,7 +3838,7 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
         render_png(grid, rows, cols, fpath,
                    cell_size=cell_size, palette_name=palette_name,
                    grid_lines=grid_lines, grid_line_color=grid_line_color,
-                   wireworld=ww, aa=aa, grayscott=gs, lenia=ln)
+                   wireworld=ww, aa=aa, grayscott=gs or ph, lenia=ln)
 
         if gen % 10 == 0 or gen == generations - 1:
             print(f"  [{gen + 1}/{generations}] {fname}")
@@ -4309,6 +4640,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         turmite = _is_turmite(rule)
         wator = _is_wator(rule)
         fallingsand = _is_fallingsand(rule)
+        physarum = _is_physarum(rule)
 
         # Track population
         pop = _count_population(grid)
@@ -4377,7 +4709,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     ch = braille_lines[tr][tc]
                     if ch == chr(_BRAILLE_BASE):
                         continue  # empty — skip for speed
-                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia, turmite=turmite, wator=wator, fallingsand=fallingsand)
+                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia or physarum, turmite=turmite, wator=wator, fallingsand=fallingsand)
                     try:
                         stdscr.addstr(tr, tc, ch, curses.color_pair(cp))
                     except curses.error:
@@ -4417,7 +4749,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif turmite:
                         attr = curses.color_pair(_turmite_color(age))
                         cell_str = "\u2588\u2588" if age else "  "
-                    elif gs or lenia:
+                    elif gs or lenia or physarum:
                         attr = curses.color_pair(_grayscott_color(age))
                         cell_str = "\u2588\u2588" if age > 3 else "  "
                     elif ww:
@@ -4887,6 +5219,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_turmite = turmite
                 was_wator = wator
                 was_fs = fallingsand
+                was_phys = physarum
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -4900,10 +5233,11 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_turmite = _is_turmite(rule)
                 new_wator = _is_wator(rule)
                 new_fs = _is_fallingsand(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs:
+                new_phys = _is_physarum(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys:
                     hashlife_active = False
                 # Mode transition: clear grid and re-initialize
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -4928,6 +5262,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_fs:
                         _fs_init(rows, cols)
                         grid = _fs_to_grid(rows, cols)
+                    elif new_phys:
+                        _phys_init(rows, cols)
+                        grid = _phys_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -5025,6 +5362,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 elif eca:
                     _eca_init(cols, init_type="random")
                     grid = _eca_to_grid(rows, cols)
+                elif physarum:
+                    _phys_init(rows, cols)
+                    grid = _phys_to_grid(rows, cols)
                 else:
                     import random
                     for r2 in range(rows):
@@ -5046,6 +5386,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_turmite = turmite
                 was_wator = wator
                 was_fs = fallingsand
+                was_phys = physarum
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -5059,9 +5400,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_turmite = _is_turmite(rule)
                 new_wator = _is_wator(rule)
                 new_fs = _is_fallingsand(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs:
+                new_phys = _is_physarum(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator or new_fs or new_phys:
                     hashlife_active = False
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator or was_fs != new_fs or was_phys != new_phys:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -5086,6 +5428,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_fs:
                         _fs_init(rows, cols)
                         grid = _fs_to_grid(rows, cols)
+                    elif new_phys:
+                        _phys_init(rows, cols)
+                        grid = _phys_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -5361,6 +5706,30 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 rule["name"] = f"Falling Sand ({FALLINGSAND_PRESETS[preset_name]['name']})"
                 _fs_init(rows, cols, preset_name)
                 grid = _fs_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord("<") and physarum:
+                # Previous Physarum preset
+                _phys_preset_idx = (_phys_preset_idx - 1) % len(PHYSARUM_PRESET_NAMES)
+                preset_name = PHYSARUM_PRESET_NAMES[_phys_preset_idx]
+                rule["name"] = f"Physarum ({PHYSARUM_PRESETS[preset_name]['name']})"
+                _phys_init(rows, cols, preset_name)
+                grid = _phys_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord(">") and physarum:
+                # Next Physarum preset
+                _phys_preset_idx = (_phys_preset_idx + 1) % len(PHYSARUM_PRESET_NAMES)
+                preset_name = PHYSARUM_PRESET_NAMES[_phys_preset_idx]
+                rule["name"] = f"Physarum ({PHYSARUM_PRESETS[preset_name]['name']})"
+                _phys_init(rows, cols, preset_name)
+                grid = _phys_to_grid(rows, cols)
                 generation = 0
                 history = [copy.deepcopy(grid)]
                 hist_idx = 0
@@ -6186,6 +6555,13 @@ def main():
              "Options: " + ", ".join(FALLINGSAND_PRESETS.keys()),
     )
     parser.add_argument(
+        "--physarum-preset",
+        choices=list(PHYSARUM_PRESETS.keys()),
+        default="dendritic",
+        help="Physarum preset when --rule physarum (default: dendritic). "
+             "Options: " + ", ".join(PHYSARUM_PRESETS.keys()),
+    )
+    parser.add_argument(
         "--discover",
         action="store_true",
         default=False,
@@ -6413,6 +6789,15 @@ def main():
             rule["name"] = f"Falling Sand ({preset['name']})"
         _fs_init(args.rows, args.cols, fs_preset_name)
         grid = _fs_to_grid(args.rows, args.cols)
+    elif args.rule.lower() == "physarum":
+        # Physarum slime mold transport network
+        phys_preset_name = args.physarum_preset
+        if phys_preset_name in PHYSARUM_PRESETS:
+            _phys_preset_idx = PHYSARUM_PRESET_NAMES.index(phys_preset_name)
+            preset = PHYSARUM_PRESETS[phys_preset_name]
+            rule["name"] = f"Physarum ({preset['name']})"
+        _phys_init(args.rows, args.cols, phys_preset_name)
+        grid = _phys_to_grid(args.rows, args.cols)
     else:
         place_pattern(grid, args.pattern)
 
