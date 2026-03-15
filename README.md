@@ -1,6 +1,6 @@
 # Cellular Automaton — Terminal Simulator
 
-A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, and supports arbitrary rules via B/S notation.
+A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, and supports arbitrary rules via B/S notation.
 
 ## Usage
 
@@ -18,6 +18,9 @@ python3 life.py --rule B2/S                        # custom rule via B/S notatio
 python3 life.py --rule wireworld                   # Wireworld 4-state automaton
 python3 life.py --rule grayscott                   # Gray-Scott reaction-diffusion
 python3 life.py --rule grayscott --gs-preset coral  # Gray-Scott with coral preset
+python3 life.py --rule lenia                        # Lenia continuous CA (Orbium glider)
+python3 life.py --rule lenia --lenia-preset geminium # self-replicating Lenia species
+python3 life.py --rule lenia --lenia-preset smooth_life # organic SmoothLife soup
 python3 life.py --rule elementary                   # 1D Elementary CA (Rule 30)
 python3 life.py --rule elementary --eca-rule 110    # Turing-complete Rule 110
 python3 life.py --rule elementary --eca-rule 90     # Sierpinski triangles
@@ -38,8 +41,9 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--speed`   | 0.1       | Delay between generations (seconds)  |
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
 | `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
-| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `elementary`, or B/S notation (e.g. `B36/S23`) |
+| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, or B/S notation (e.g. `B36/S23`) |
 | `--gs-preset` | `mitosis` | Gray-Scott parameter preset (`mitosis`, `coral`, `solitons`, `maze`, `spots`, `worms`, `waves`, `bubbles`) |
+| `--lenia-preset` | `orbium` | Lenia species preset (`orbium`, `geminium`, `scutium`, `hydrogeminium`, `wanderer`, `smooth_life`) |
 | `--eca-rule` | 30        | Wolfram rule number (0–255) for Elementary CA mode |
 | `--script`  | —         | Run a Python script on startup (path or name from `~/.life-scripts/`) |
 | `--discover` | off      | Launch genetic algorithm rule discovery mode |
@@ -69,7 +73,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `B`       | Toggle Braille high-density rendering |
 | `T`       | Cycle topology (Torus → Klein Bottle → Möbius Strip → Bounded) |
 | `H`       | Toggle HashLife hyperspeed mode   |
-| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle notable ECA rules in Elementary mode |
+| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode |
 | `W`       | Enter a specific Wolfram rule number (0–255) in Elementary CA mode |
 | `G`       | Export history as animated GIF    |
 | `L`       | Load and run a script             |
@@ -150,6 +154,7 @@ All rules use Birth/Survival notation — a cell is born if it has exactly B nei
 | `maze`     | B3/S12345  | Generates maze-like corridors |
 | `wireworld`| *(4-state)* | Logic circuits — see [Wireworld](#wireworld) below |
 | `grayscott`| *(continuous)* | Reaction-diffusion — see [Gray-Scott](#gray-scott-reaction-diffusion) below |
+| `lenia`    | *(continuous)* | Smooth-kernel CA — see [Lenia](#lenia-continuous-cellular-automata) below |
 | `elementary`| *(1D Wolfram)* | 256 elementary CA rules — see [Elementary CA](#elementary-cellular-automata) below |
 
 Use `--rule <preset>` or `--rule B.../S...` for custom rules. Press `R` at runtime to cycle through presets.
@@ -290,6 +295,55 @@ By default, the 1D row starts with a single live cell in the center — the cano
 - **Boundary conditions** — the 1D row wraps circularly (toroidal).
 - **Status bar** — shows `Rule N [<>]cycle [W]rule#` with the current Wolfram rule number.
 - **History** — the space-time diagram is capped at 10,000 rows to prevent unbounded memory growth.
+
+## Lenia — Continuous Cellular Automata
+
+Lenia generalizes Conway's Life into continuous space and time. Instead of binary alive/dead cells, each cell holds a continuous value (0.0–1.0). A smooth ring-shaped kernel computes each cell's neighborhood potential via convolution, and a Gaussian growth function maps that potential to a cell update — producing strikingly organic, creature-like patterns: smooth gliders that look like microorganisms, self-replicating blobs, and fluid structures.
+
+The governing equations:
+
+```
+Kernel K: ring-shaped with Gaussian bumps at configurable radii
+Potential U = K * A (convolution of kernel with cell state)
+Growth G(u) = 2·exp(−(u−μ)² / 2σ²) − 1
+Update A(t+dt) = clip(A(t) + dt·G(U), 0, 1)
+```
+
+### Starting Lenia
+
+```bash
+python3 life.py --rule lenia                            # default Orbium glider
+python3 life.py --rule lenia --lenia-preset geminium     # self-replicating pair
+python3 life.py --rule lenia --lenia-preset smooth_life  # organic SmoothLife soup
+```
+
+### Species Presets
+
+Press `<` / `>` at runtime to cycle through presets. Each has tuned kernel radius (R), time resolution (T), growth parameters (μ, σ), and kernel ring structure (β):
+
+| Preset           | Character                                    |
+|------------------|----------------------------------------------|
+| `orbium`         | Smooth glider — a single blob that drifts across the grid |
+| `geminium`       | Self-replicating — splits into daughter organisms |
+| `scutium`        | Shield crawler — compact crawling structure |
+| `hydrogeminium`  | Fluid replicator — loose, flowing self-replication |
+| `wanderer`       | Drifting blob with gentle motion |
+| `smooth_life`    | Organic soup — emergent structures from random noise |
+
+### Rendering
+
+Lenia reuses the Gray-Scott continuous gradient color pipeline:
+
+- **Terminal** — cells mapped to a color gradient: black (no activity) → blue → cyan → green → white (peak value). Cells above a threshold render as filled blocks.
+- **PNG** — smooth 6-stop RGB gradient: black → blue → cyan → green → yellow → white.
+- **GIF** — quantized to the 5-color GIF palette.
+- **Braille** — supported; color chosen by majority vote of the 2×4 block.
+
+### Interactions
+
+- **HashLife** — incompatible (continuous values). Pressing `H` in Lenia mode is blocked; switching to Lenia via `R` auto-deactivates HashLife.
+- **Randomize** (`r`) — re-seeds with the current preset's seed pattern.
+- **Status bar** — displays current preset name.
 
 ## Population Statistics Dashboard
 

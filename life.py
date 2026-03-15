@@ -39,6 +39,7 @@ RULES = {
     "wireworld": {"b": set(), "s": set(), "name": "Wireworld", "wireworld": True},
     "grayscott": {"b": set(), "s": set(), "name": "Gray-Scott (Mitosis)", "grayscott": True},
     "elementary": {"b": set(), "s": set(), "name": "Elementary CA (Rule 30)", "elementary": True},
+    "lenia":      {"b": set(), "s": set(), "name": "Lenia (Orbium)", "lenia": True},
 }
 
 RULE_NAMES = list(RULES.keys())
@@ -124,6 +125,11 @@ def _is_grayscott(rule):
 def _is_elementary(rule):
     """Check if the current rule is a 1D Elementary Cellular Automaton."""
     return rule.get("elementary", False)
+
+
+def _is_lenia(rule):
+    """Check if the current rule is a Lenia continuous cellular automaton."""
+    return rule.get("lenia", False)
 
 
 # --- 1D Elementary Cellular Automata (Wolfram Rules) ---
@@ -327,6 +333,264 @@ def _step_grayscott_python():
             new_v[r][c] = max(0.0, min(1.0, v + (GS_DV * lap_v + uvv - (_gs_feed + _gs_kill) * v) * GS_DT))
     _gs_u = new_u
     _gs_v = new_v
+
+
+# --- Lenia: Continuous Smooth-Kernel Cellular Automata ---
+# Generalizes Conway's Life into continuous space and time using smooth
+# ring-shaped kernels and a Gaussian growth function.
+#   Kernel K: ring-shaped with Gaussian bumps at specified radii
+#   Potential U = K * A (convolution of kernel with cell state)
+#   Growth G(u) = 2 * exp(-((u - mu)^2) / (2 * sigma^2)) - 1
+#   Update A(t+dt) = clip(A(t) + dt * G(U), 0, 1)
+
+LENIA_PRESETS = {
+    "orbium": {
+        "name": "Orbium (smooth glider)",
+        "R": 13, "T": 10, "mu": 0.15, "sigma": 0.015,
+        "beta": [1],
+        "seed": "orbium",
+    },
+    "geminium": {
+        "name": "Geminium (self-replicating)",
+        "R": 10, "T": 10, "mu": 0.14, "sigma": 0.014,
+        "beta": [1, 0.5],
+        "seed": "geminium",
+    },
+    "scutium": {
+        "name": "Scutium (shield crawler)",
+        "R": 12, "T": 10, "mu": 0.16, "sigma": 0.02,
+        "beta": [1, 0.3, 0.7],
+        "seed": "random_blobs",
+    },
+    "hydrogeminium": {
+        "name": "Hydrogeminium (fluid replicator)",
+        "R": 14, "T": 10, "mu": 0.15, "sigma": 0.016,
+        "beta": [1, 0.6, 0.2],
+        "seed": "random_blobs",
+    },
+    "wanderer": {
+        "name": "Wanderer (drifting blob)",
+        "R": 10, "T": 10, "mu": 0.12, "sigma": 0.012,
+        "beta": [1],
+        "seed": "random_blobs",
+    },
+    "smooth_life": {
+        "name": "SmoothLife (organic soup)",
+        "R": 8, "T": 5, "mu": 0.3, "sigma": 0.03,
+        "beta": [1, 0.5],
+        "seed": "random_noise",
+    },
+}
+
+LENIA_PRESET_NAMES = list(LENIA_PRESETS.keys())
+
+_lenia_A = None       # 2D state array (float 0.0-1.0)
+_lenia_kernel = None  # precomputed convolution kernel (numpy) or kernel params
+_lenia_preset_idx = 0
+_lenia_R = 13
+_lenia_T = 10
+_lenia_mu = 0.15
+_lenia_sigma = 0.015
+_lenia_beta = [1]
+
+
+def _lenia_bell(x, mu, sigma):
+    """Gaussian bell function for kernel and growth."""
+    return math.exp(-((x - mu) ** 2) / (2.0 * sigma ** 2))
+
+
+def _lenia_build_kernel(R, beta):
+    """Build the Lenia ring-shaped kernel with Gaussian bumps.
+
+    The kernel is a 2D array of size (2R+1) x (2R+1), normalized to sum to 1.
+    beta is a list of peak heights for concentric rings.
+    """
+    size = 2 * R + 1
+    n_rings = len(beta)
+    if _HAS_NUMPY:
+        kernel = np.zeros((size, size), dtype=np.float64)
+        for y in range(size):
+            for x in range(size):
+                dy = y - R
+                dx = x - R
+                r = math.sqrt(dy * dy + dx * dx) / R
+                if r <= 1.0:
+                    ring_idx = min(int(r * n_rings), n_rings - 1)
+                    # Gaussian bump centered at (ring_idx + 0.5) / n_rings
+                    ring_center = (ring_idx + 0.5) / n_rings
+                    ring_width = 0.5 / n_rings
+                    kernel[y, x] = beta[ring_idx] * _lenia_bell(r, ring_center, ring_width)
+        total = kernel.sum()
+        if total > 0:
+            kernel /= total
+        return kernel
+    else:
+        kernel = [[0.0] * size for _ in range(size)]
+        total = 0.0
+        for y in range(size):
+            for x in range(size):
+                dy = y - R
+                dx = x - R
+                r = math.sqrt(dy * dy + dx * dx) / R
+                if r <= 1.0:
+                    ring_idx = min(int(r * n_rings), n_rings - 1)
+                    ring_center = (ring_idx + 0.5) / n_rings
+                    ring_width = 0.5 / n_rings
+                    val = beta[ring_idx] * _lenia_bell(r, ring_center, ring_width)
+                    kernel[y][x] = val
+                    total += val
+        if total > 0:
+            for y in range(size):
+                for x in range(size):
+                    kernel[y][x] /= total
+        return kernel
+
+
+def _lenia_growth(u, mu, sigma):
+    """Lenia growth function: maps potential to cell update rate."""
+    return 2.0 * math.exp(-((u - mu) ** 2) / (2.0 * sigma ** 2)) - 1.0
+
+
+def _lenia_init(rows, cols, seed_type="orbium"):
+    """Initialize Lenia state array and precompute kernel."""
+    global _lenia_A, _lenia_kernel
+    import random
+
+    _lenia_kernel = _lenia_build_kernel(_lenia_R, _lenia_beta)
+
+    if _HAS_NUMPY:
+        _lenia_A = np.zeros((rows, cols), dtype=np.float64)
+    else:
+        _lenia_A = [[0.0] * cols for _ in range(rows)]
+
+    if seed_type == "orbium":
+        # Place a circular blob in the center — approximation of the Orbium glider
+        cr, cc = rows // 2, cols // 2
+        R = _lenia_R
+        for dy in range(-R, R + 1):
+            for dx in range(-R, R + 1):
+                r2 = dy * dy + dx * dx
+                if r2 <= R * R:
+                    nr, nc = (cr + dy) % rows, (cc + dx) % cols
+                    # Gaussian profile
+                    dist = math.sqrt(r2) / R
+                    val = max(0.0, 1.0 - dist * dist)
+                    if _HAS_NUMPY:
+                        _lenia_A[nr, nc] = val
+                    else:
+                        _lenia_A[nr][nc] = val
+    elif seed_type == "geminium":
+        # Place two adjacent blobs to encourage splitting/replication
+        cr, cc = rows // 2, cols // 2
+        R = _lenia_R
+        for offset_c in [-R, R]:
+            for dy in range(-R, R + 1):
+                for dx in range(-R, R + 1):
+                    r2 = dy * dy + dx * dx
+                    if r2 <= R * R:
+                        nr = (cr + dy) % rows
+                        nc = (cc + offset_c + dx) % cols
+                        dist = math.sqrt(r2) / R
+                        val = max(0.0, 0.8 * (1.0 - dist * dist))
+                        if _HAS_NUMPY:
+                            _lenia_A[nr, nc] = max(_lenia_A[nr, nc], val)
+                        else:
+                            _lenia_A[nr][nc] = max(_lenia_A[nr][nc], val)
+    elif seed_type == "random_blobs":
+        # Scatter several Gaussian blobs
+        num_blobs = max(3, (rows * cols) // 1500)
+        for _ in range(num_blobs):
+            br = random.randint(0, rows - 1)
+            bc = random.randint(0, cols - 1)
+            blob_r = random.randint(max(3, _lenia_R // 2), _lenia_R)
+            for dy in range(-blob_r, blob_r + 1):
+                for dx in range(-blob_r, blob_r + 1):
+                    r2 = dy * dy + dx * dx
+                    if r2 <= blob_r * blob_r:
+                        nr = (br + dy) % rows
+                        nc = (bc + dx) % cols
+                        dist = math.sqrt(r2) / blob_r
+                        val = random.uniform(0.5, 1.0) * max(0.0, 1.0 - dist * dist)
+                        if _HAS_NUMPY:
+                            _lenia_A[nr, nc] = min(1.0, _lenia_A[nr, nc] + val)
+                        else:
+                            _lenia_A[nr][nc] = min(1.0, _lenia_A[nr][nc] + val)
+    elif seed_type == "random_noise":
+        # Fill with low random noise — good for SmoothLife-style emergence
+        if _HAS_NUMPY:
+            _lenia_A = np.random.uniform(0.0, 0.3, (rows, cols))
+        else:
+            _lenia_A = [[random.uniform(0.0, 0.3) for _ in range(cols)] for _ in range(rows)]
+
+
+def _lenia_to_grid(rows, cols):
+    """Convert Lenia state to an integer grid (0-100) for display."""
+    grid = make_grid(rows, cols)
+    if _lenia_A is None:
+        return grid
+    if _HAS_NUMPY:
+        quantized = np.clip(np.array(_lenia_A) * 100, 0, 100).astype(int)
+        return quantized.tolist()
+    else:
+        for r in range(rows):
+            for c in range(cols):
+                grid[r][c] = max(0, min(100, int(_lenia_A[r][c] * 100)))
+        return grid
+
+
+def _step_lenia_numpy():
+    """Lenia step using NumPy/SciPy convolution."""
+    global _lenia_A
+    if _lenia_A is None:
+        return
+    # Convolve state with kernel to get potential field
+    U = convolve2d(_lenia_A, _lenia_kernel, mode="same", boundary="wrap")
+    # Vectorized growth function
+    G = 2.0 * np.exp(-((_lenia_mu - U) ** 2) / (2.0 * _lenia_sigma ** 2)) - 1.0
+    # Update with time step
+    dt = 1.0 / _lenia_T
+    _lenia_A = np.clip(_lenia_A + dt * G, 0.0, 1.0)
+
+
+def _lenia_apply_preset(preset_name):
+    """Apply a Lenia preset's parameters to the module-level state."""
+    global _lenia_R, _lenia_T, _lenia_mu, _lenia_sigma, _lenia_beta
+    preset = LENIA_PRESETS[preset_name]
+    _lenia_R = preset["R"]
+    _lenia_T = preset["T"]
+    _lenia_mu = preset["mu"]
+    _lenia_sigma = preset["sigma"]
+    _lenia_beta = preset["beta"]
+
+
+def _step_lenia_python():
+    """Lenia step using pure Python — cell by cell convolution."""
+    global _lenia_A
+    if _lenia_A is None:
+        return
+    rows = len(_lenia_A)
+    cols = len(_lenia_A[0])
+    R = _lenia_R
+    ksize = 2 * R + 1
+    dt = 1.0 / _lenia_T
+
+    new_A = [[0.0] * cols for _ in range(rows)]
+    for r in range(rows):
+        for c in range(cols):
+            # Compute potential U via kernel convolution
+            potential = 0.0
+            for ky in range(ksize):
+                for kx in range(ksize):
+                    kval = _lenia_kernel[ky][kx]
+                    if kval == 0.0:
+                        continue
+                    nr = (r + ky - R) % rows
+                    nc = (c + kx - R) % cols
+                    potential += kval * _lenia_A[nr][nc]
+            # Growth and update
+            g = _lenia_growth(potential, _lenia_mu, _lenia_sigma)
+            new_A[r][c] = max(0.0, min(1.0, _lenia_A[r][c] + dt * g))
+    _lenia_A = new_A
 
 
 def parse_rule_string(rule_str):
@@ -1173,6 +1437,13 @@ def step(grid, rule=None):
         rows, cols = len(grid), len(grid[0])
         _eca_step()
         return _eca_to_grid(rows, cols)
+    if _is_lenia(rule):
+        rows, cols = len(grid), len(grid[0])
+        if _HAS_NUMPY:
+            _step_lenia_numpy()
+        else:
+            _step_lenia_python()
+        return _lenia_to_grid(rows, cols)
     if _is_grayscott(rule):
         rows, cols = len(grid), len(grid[0])
         if _HAS_NUMPY:
@@ -1912,7 +2183,7 @@ def _gif_sub_blocks(data):
     return bytes(result)
 
 
-def export_gif(history_frames, rows, cols, filepath, cell_size=4, delay_cs=10, wireworld=False, grayscott=False):
+def export_gif(history_frames, rows, cols, filepath, cell_size=4, delay_cs=10, wireworld=False, grayscott=False, lenia=False):
     """Export a list of grid snapshots as an animated GIF.
 
     Args:
@@ -1971,7 +2242,7 @@ def export_gif(history_frames, rows, cols, filepath, cell_size=4, delay_cs=10, w
             for c in range(cols):
                 if wireworld:
                     idx = _wireworld_to_gif_index(frame_grid[r][c])
-                elif grayscott:
+                elif grayscott or lenia:
                     idx = _gs_to_gif_index(frame_grid[r][c])
                 else:
                     idx = _age_to_gif_index(frame_grid[r][c])
@@ -2115,7 +2386,7 @@ def _png_chunk(chunk_type, data):
 
 def render_png(grid, rows, cols, filepath, cell_size=8, palette_name="classic",
                grid_lines=False, grid_line_color=None, wireworld=False, aa=True,
-               grayscott=False):
+               grayscott=False, lenia=False):
     """Render a single grid frame as a high-resolution PNG image.
 
     Args:
@@ -2139,7 +2410,7 @@ def render_png(grid, rows, cols, filepath, cell_size=8, palette_name="classic",
 
     # Build color index map for the grid
     # For Gray-Scott, color_map stores direct RGB tuples instead of indices
-    if grayscott:
+    if grayscott or lenia:
         color_map = [[(0, 0, 0)] * cols for _ in range(rows)]
         for r in range(rows):
             for c in range(cols):
@@ -2183,7 +2454,7 @@ def render_png(grid, rows, cols, filepath, cell_size=8, palette_name="classic",
                     continue
 
             cm = color_map[cell_r][cell_c]
-            if grayscott:
+            if grayscott or lenia:
                 base_color = cm  # already RGB tuple
             else:
                 base_color = palette[cm]
@@ -2213,7 +2484,7 @@ def render_png(grid, rows, cols, filepath, cell_size=8, palette_name="classic",
                     br, bg, bb = float(base_color[0]), float(base_color[1]), float(base_color[2])
                     for nr, nc, w in edges:
                         ncm = color_map[nr][nc]
-                        n_color = ncm if grayscott else palette[ncm]
+                        n_color = ncm if (grayscott or lenia) else palette[ncm]
                         if n_color != base_color:
                             br += n_color[0] * w
                             bg += n_color[1] * w
@@ -2278,6 +2549,7 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
 
     ww = wireworld or _is_wireworld(rule)
     gs = _is_grayscott(rule)
+    ln = _is_lenia(rule)
 
     # Initialize grid
     grid = make_grid(rows, cols)
@@ -2292,6 +2564,10 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
         grid, loaded_ww = _load_pattern_file(path, rows, cols)
         if loaded_ww:
             ww = True
+    elif ln:
+        preset = LENIA_PRESETS[LENIA_PRESET_NAMES[_lenia_preset_idx]]
+        _lenia_init(rows, cols, preset.get("seed", "orbium"))
+        grid = _lenia_to_grid(rows, cols)
     elif gs:
         _gs_init(rows, cols)
         grid = _gs_to_grid(rows, cols)
@@ -2312,7 +2588,7 @@ def run_headless_render(rows, cols, speed, rule, pattern, load_path, generations
         render_png(grid, rows, cols, fpath,
                    cell_size=cell_size, palette_name=palette_name,
                    grid_lines=grid_lines, grid_line_color=grid_line_color,
-                   wireworld=ww, aa=aa, grayscott=gs)
+                   wireworld=ww, aa=aa, grayscott=gs, lenia=ln)
 
         if gen % 10 == 0 or gen == generations - 1:
             print(f"  [{gen + 1}/{generations}] {fname}")
@@ -3109,6 +3385,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         ww = _is_wireworld(rule)
         gs = _is_grayscott(rule)
         eca = _is_elementary(rule)
+        lenia = _is_lenia(rule)
 
         # Track population
         pop = _count_population(grid)
@@ -3177,7 +3454,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     ch = braille_lines[tr][tc]
                     if ch == chr(_BRAILLE_BASE):
                         continue  # empty — skip for speed
-                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs)
+                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia)
                     try:
                         stdscr.addstr(tr, tc, ch, curses.color_pair(cp))
                     except curses.error:
@@ -3208,7 +3485,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                         attr = curses.color_pair(8)
                     elif detected_cells and (r, c) in detected_cells:
                         attr = curses.color_pair(12)
-                    elif gs:
+                    elif gs or lenia:
                         attr = curses.color_pair(_grayscott_color(age))
                         cell_str = "\u2588\u2588" if age > 3 else "  "
                     elif ww:
@@ -3668,6 +3945,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_ww = ww
                 was_gs = gs
                 was_eca = eca
+                was_lenia = lenia
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -3677,10 +3955,11 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_ww = _is_wireworld(rule)
                 new_gs = _is_grayscott(rule)
                 new_eca = _is_elementary(rule)
-                if new_ww or new_gs or new_eca:
+                new_lenia = _is_lenia(rule)
+                if new_ww or new_gs or new_eca or new_lenia:
                     hashlife_active = False
                 # Mode transition: clear grid and re-initialize
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -3692,6 +3971,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_eca:
                         _eca_init(cols)
                         grid = _eca_to_grid(rows, cols)
+                    elif new_lenia:
+                        preset = LENIA_PRESETS[LENIA_PRESET_NAMES[_lenia_preset_idx]]
+                        _lenia_init(rows, cols, preset.get("seed", "orbium"))
+                        grid = _lenia_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -3921,7 +4204,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     hashlife_active = False
             elif key == ord("H"):
                 # Toggle HashLife hyperspeed mode (only for Life-like B/S rules)
-                if not ww and not gs and not se.custom_rule_fn:
+                if not ww and not gs and not lenia and not se.custom_rule_fn:
                     if not hashlife_active:
                         # Activate: import grid into quadtree
                         hashlife = HashLifeEngine()
@@ -4008,6 +4291,32 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 hist_idx = 0
                 browsing_history = False
                 pop_history = []
+            elif key == ord("<") and lenia:
+                # Previous Lenia preset
+                _lenia_preset_idx = (_lenia_preset_idx - 1) % len(LENIA_PRESET_NAMES)
+                _lenia_apply_preset(LENIA_PRESET_NAMES[_lenia_preset_idx])
+                rule["name"] = f"Lenia ({LENIA_PRESETS[LENIA_PRESET_NAMES[_lenia_preset_idx]]['name']})"
+                preset = LENIA_PRESETS[LENIA_PRESET_NAMES[_lenia_preset_idx]]
+                _lenia_init(rows, cols, preset.get("seed", "orbium"))
+                grid = _lenia_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord(">") and lenia:
+                # Next Lenia preset
+                _lenia_preset_idx = (_lenia_preset_idx + 1) % len(LENIA_PRESET_NAMES)
+                _lenia_apply_preset(LENIA_PRESET_NAMES[_lenia_preset_idx])
+                rule["name"] = f"Lenia ({LENIA_PRESETS[LENIA_PRESET_NAMES[_lenia_preset_idx]]['name']})"
+                preset = LENIA_PRESETS[LENIA_PRESET_NAMES[_lenia_preset_idx]]
+                _lenia_init(rows, cols, preset.get("seed", "orbium"))
+                grid = _lenia_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
             elif key == ord("W") and eca:
                 # Enter a specific ECA rule number (0-255)
                 paused = True
@@ -4048,7 +4357,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     try:
                         export_gif(history, rows, cols, gif_path,
                                    cell_size=4, delay_cs=max(1, int(delay * 100)),
-                                   wireworld=ww, grayscott=gs)
+                                   wireworld=ww, grayscott=gs, lenia=lenia)
                         export_msg = f" Saved {gif_path}"
                     except (OSError, IOError) as exc:
                         export_msg = f" GIF export failed: {exc}"
@@ -4800,6 +5109,13 @@ def main():
              "Notable: 30 (PRNG), 110 (Turing-complete), 90 (Sierpinski)",
     )
     parser.add_argument(
+        "--lenia-preset",
+        choices=list(LENIA_PRESETS.keys()),
+        default="orbium",
+        help="Lenia species preset when --rule lenia (default: orbium). "
+             "Options: " + ", ".join(LENIA_PRESETS.keys()),
+    )
+    parser.add_argument(
         "--discover",
         action="store_true",
         default=False,
@@ -4868,7 +5184,7 @@ def main():
     )
     args = parser.parse_args()
 
-    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx
+    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx
 
     # Headless batch-render mode: output PNG frames without terminal UI
     if args.render is not None:
@@ -4990,6 +5306,16 @@ def main():
         rule["name"] = f"Elementary CA (Rule {_eca_rule_num})"
         _eca_init(args.cols)
         grid = _eca_to_grid(args.rows, args.cols)
+    elif args.rule.lower() == "lenia":
+        # Lenia continuous smooth-kernel CA
+        lenia_preset_name = args.lenia_preset
+        if lenia_preset_name in LENIA_PRESETS:
+            _lenia_preset_idx = LENIA_PRESET_NAMES.index(lenia_preset_name)
+            _lenia_apply_preset(lenia_preset_name)
+            preset = LENIA_PRESETS[lenia_preset_name]
+            rule["name"] = f"Lenia ({preset['name']})"
+        _lenia_init(args.rows, args.cols, preset.get("seed", "orbium"))
+        grid = _lenia_to_grid(args.rows, args.cols)
     else:
         place_pattern(grid, args.pattern)
 
