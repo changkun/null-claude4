@@ -50,6 +50,7 @@ python3 life.py --discover --ga-generations 100    # more generations for deeper
 | `e`       | Enter editor mode (auto-pauses)   |
 | `g`       | Toggle population stats panel     |
 | `d`       | Toggle pattern detection overlay  |
+| `S`       | Toggle sound synthesis            |
 | `G`       | Export history as animated GIF    |
 | `L`       | Load and run a script             |
 | `[`       | Rewind one generation (auto-pauses) |
@@ -316,6 +317,36 @@ Both backends produce identical results — same toroidal wrapping, same cell ag
 ```bash
 pip install numpy scipy
 ```
+
+## Sound Synthesis
+
+Press `S` to toggle real-time audio sonification of the simulation. The sound engine maps grid activity to audio parameters, letting you *hear* the difference between chaotic rulesets and stable configurations.
+
+### Mappings
+
+| Grid metric | Audio parameter | Details |
+|---|---|---|
+| **Population density** | Pitch | Cell density maps to frequency (80–880 Hz) with square-root scaling for a musical feel |
+| **Spatial distribution** | Stereo panning | Center-of-mass column position drives constant-power left/right balance |
+| **Growth rate** | Volume | Rapid population change = louder; stable grids are quiet |
+
+The synthesizer generates a fundamental tone plus a second harmonic for a richer timbre, with fade envelopes at frame boundaries to prevent audio clicks.
+
+### Requirements
+
+Sound output requires one of these system audio players (auto-detected):
+
+- `paplay` (PulseAudio)
+- `aplay` (ALSA)
+- `play` (SoX)
+
+If no player is found, pressing `S` shows an error message. The status bar displays a `SOUND` indicator when audio is active.
+
+### Technical Details
+
+- **Pure Python** — 16-bit signed stereo PCM at 22050 Hz generated using `struct.pack_into`. No external dependencies.
+- **Piped output** — raw PCM is written to the audio player's stdin, so there are no temporary files.
+- **Graceful degradation** — if the audio player process dies, the sound engine silently deactivates.
 
 ## Genetic Algorithm Rule Discovery
 

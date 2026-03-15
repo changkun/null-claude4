@@ -1223,6 +1223,209 @@ def export_gif(history_frames, rows, cols, filepath, cell_size=4, delay_cs=10, w
         f.write(buf)
 
 
+# --- Sound Synthesis Mode ---
+
+
+class SoundEngine:
+    """Pure-Python PCM sound synthesis that sonifies cellular automaton activity.
+
+    Maps:
+      - Population density → pitch (more cells = higher frequency)
+      - Spatial distribution → stereo panning (center of mass → L/R balance)
+      - Growth rate → volume (rapid change = louder)
+
+    Uses struct-based 16-bit stereo PCM at 22050 Hz, piped to aplay/paplay/afplay.
+    """
+
+    SAMPLE_RATE = 22050
+    CHANNELS = 2
+    SAMPLE_WIDTH = 2  # 16-bit signed
+
+    # Frequency range (Hz)
+    FREQ_MIN = 80.0
+    FREQ_MAX = 880.0
+
+    # Volume range (0.0 - 1.0)
+    VOL_MIN = 0.05
+    VOL_MAX = 0.6
+
+    def __init__(self):
+        self.active = False
+        self._process = None
+        self._phase = 0.0  # continuous oscillator phase
+        self._prev_pop = 0
+        self._player_cmd = None
+
+    def _find_player(self):
+        """Find an available PCM audio player on the system."""
+        import shutil
+        import subprocess
+        # Try common Linux/macOS audio players
+        candidates = [
+            # Linux PulseAudio
+            ["paplay", "--raw", "--format=s16le", "--rate=22050", "--channels=2"],
+            # Linux ALSA
+            ["aplay", "-q", "-f", "S16_LE", "-r", "22050", "-c", "2", "-t", "raw"],
+            # macOS (SOX play)
+            ["play", "-q", "-t", "raw", "-b", "16", "-e", "signed-integer",
+             "-r", "22050", "-c", "2", "-"],
+        ]
+        for cmd in candidates:
+            if shutil.which(cmd[0]):
+                return cmd
+        return None
+
+    def start(self):
+        """Start the audio output stream."""
+        import subprocess
+        if self._process and self._process.poll() is None:
+            return True  # already running
+        self._player_cmd = self._find_player()
+        if not self._player_cmd:
+            return False
+        try:
+            self._process = subprocess.Popen(
+                self._player_cmd,
+                stdin=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+            )
+            self.active = True
+            self._phase = 0.0
+            return True
+        except (OSError, subprocess.SubprocessError):
+            self._process = None
+            return False
+
+    def stop(self):
+        """Stop the audio output stream."""
+        self.active = False
+        if self._process:
+            try:
+                self._process.stdin.close()
+            except (OSError, BrokenPipeError):
+                pass
+            try:
+                self._process.wait(timeout=1)
+            except Exception:
+                try:
+                    self._process.kill()
+                except OSError:
+                    pass
+            self._process = None
+
+    def toggle(self):
+        """Toggle sound on/off. Returns (new_active_state, error_msg_or_None)."""
+        if self.active:
+            self.stop()
+            return False, None
+        else:
+            ok = self.start()
+            if ok:
+                return True, None
+            else:
+                return False, "No audio player found (need aplay/paplay/play)"
+
+    def generate_frame(self, grid, rows, cols, duration):
+        """Generate and write one audio frame based on current grid state.
+
+        Args:
+            grid: 2D grid where cell > 0 means alive
+            rows, cols: grid dimensions
+            duration: frame duration in seconds (matches simulation delay)
+        """
+        if not self.active or not self._process or self._process.poll() is not None:
+            if self.active:
+                self.active = False
+            return
+
+        # --- Analyze grid ---
+        pop = 0
+        sum_r = 0.0
+        sum_c = 0.0
+        for r in range(rows):
+            for c in range(cols):
+                if grid[r][c]:
+                    pop += 1
+                    sum_r += r
+                    sum_c += c
+
+        total_cells = rows * cols
+        density = pop / total_cells if total_cells > 0 else 0.0
+
+        # Spatial center of mass → stereo panning (-1.0 = left, +1.0 = right)
+        if pop > 0:
+            center_c = sum_c / pop
+            pan = (center_c / (cols - 1)) * 2.0 - 1.0 if cols > 1 else 0.0
+        else:
+            pan = 0.0
+        pan = max(-1.0, min(1.0, pan))
+
+        # Growth rate → volume
+        if self._prev_pop > 0:
+            growth_rate = abs(pop - self._prev_pop) / self._prev_pop
+        else:
+            growth_rate = 1.0 if pop > 0 else 0.0
+        self._prev_pop = pop
+
+        # Map density to frequency (log scale for musical feel)
+        freq = self.FREQ_MIN + (self.FREQ_MAX - self.FREQ_MIN) * (density ** 0.5)
+
+        # Map growth rate to volume (clamped)
+        vol = self.VOL_MIN + (self.VOL_MAX - self.VOL_MIN) * min(growth_rate, 1.0)
+        if pop == 0:
+            vol = 0.0
+
+        # Left/right volume from panning (constant power panning)
+        pan_angle = (pan + 1.0) * math.pi / 4.0  # 0 to pi/2
+        vol_l = vol * math.cos(pan_angle)
+        vol_r = vol * math.sin(pan_angle)
+
+        # --- Generate PCM samples ---
+        # Limit frame to avoid buffer buildup
+        frame_dur = min(duration, 0.15)
+        num_samples = max(1, int(self.SAMPLE_RATE * frame_dur))
+        buf = bytearray(num_samples * self.CHANNELS * self.SAMPLE_WIDTH)
+
+        phase = self._phase
+        phase_inc = freq / self.SAMPLE_RATE
+
+        # Add a secondary harmonic for richer tone
+        harm_ratio = 0.3  # harmonic amplitude relative to fundamental
+        harm_mult = 2.0   # second harmonic
+
+        for i in range(num_samples):
+            # Fundamental + harmonic
+            t = phase + i * phase_inc
+            sample = math.sin(2.0 * math.pi * t)
+            sample += harm_ratio * math.sin(2.0 * math.pi * t * harm_mult)
+            sample /= (1.0 + harm_ratio)
+
+            # Apply envelope (tiny fade at edges to prevent clicks)
+            if i < 64:
+                sample *= i / 64.0
+            elif i > num_samples - 64:
+                sample *= (num_samples - i) / 64.0
+
+            left = int(sample * vol_l * 32000)
+            right = int(sample * vol_r * 32000)
+            left = max(-32768, min(32767, left))
+            right = max(-32768, min(32767, right))
+
+            offset = i * 4
+            struct.pack_into("<hh", buf, offset, left, right)
+
+        self._phase = (phase + num_samples * phase_inc) % 1.0
+
+        # Write to player
+        try:
+            self._process.stdin.write(bytes(buf))
+            self._process.stdin.flush()
+        except (OSError, BrokenPipeError):
+            self.active = False
+            self._process = None
+
+
 # --- Pattern Recognition ---
 
 
@@ -1777,6 +1980,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
     max_history = 10000              # max stored generations
     browsing_history = False         # True when viewing a past state
 
+    # Sound synthesis engine
+    sound = SoundEngine()
+
     # Script engine state
     se = script_engine or ScriptEngine()
     se.bind_grid(grid)
@@ -1925,7 +2131,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
             state_str = 'REWOUND' if browsing_history else ('PAUSED' if paused else 'Running')
             detect_str = " | DETECT" if detect_enabled else ""
             engine_str = " | NumPy" if _HAS_NUMPY else ""
-            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
+            sound_str = " | SOUND" if sound.active else ""
+            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
@@ -2069,6 +2276,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         # Handle input
         key = stdscr.getch()
         if key == ord("q"):
+            sound.stop()
             if mp:
                 network.close()
             break
@@ -2481,6 +2689,19 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 show_stats = not show_stats
             elif key == ord("d"):
                 detect_enabled = not detect_enabled
+            elif key == ord("S"):
+                new_state, err = sound.toggle()
+                if err:
+                    try:
+                        stdscr.addstr(min(rows, max_y - 1), 0,
+                                      f" Sound: {err}"[:max_x - 1],
+                                      curses.color_pair(2) | curses.A_REVERSE)
+                        stdscr.refresh()
+                    except curses.error:
+                        pass
+                    stdscr.nodelay(False)
+                    stdscr.getch()
+                    stdscr.nodelay(True)
             elif key == ord("G"):
                 # Export history as animated GIF
                 if len(history) > 1:
@@ -2620,6 +2841,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     hist_idx -= 1
                 if mp and network.connected:
                     network.send_step(grid, generation)
+
+        # Sound synthesis: generate audio frame for current grid state
+        if sound.active:
+            sound.generate_frame(grid, rows, cols, delay)
 
         time.sleep(delay)
 
