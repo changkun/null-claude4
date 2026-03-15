@@ -1030,6 +1030,72 @@ def _wireworld_color(state):
     return 1           # fallback
 
 
+# --- Braille Rendering ---
+
+# Unicode Braille encodes a 2×4 dot matrix per character (U+2800–U+28FF).
+# Dot positions map to bits as follows:
+#   (0,0)=0x01  (1,0)=0x08
+#   (0,1)=0x02  (1,1)=0x10
+#   (0,2)=0x04  (1,2)=0x20
+#   (0,3)=0x40  (1,3)=0x80
+
+_BRAILLE_BASE = 0x2800
+_BRAILLE_DOT = [
+    [0x01, 0x08],
+    [0x02, 0x10],
+    [0x04, 0x20],
+    [0x40, 0x80],
+]
+
+
+def _render_braille_grid(grid, rows, cols, term_rows, term_cols):
+    """Render grid as Braille characters.
+
+    Each terminal cell maps to a 2×4 block of grid cells, yielding
+    effective resolution of (term_cols*2) × (term_rows*4).
+
+    Returns a list of strings, one per terminal row.
+    """
+    lines = []
+    for tr in range(term_rows):
+        row_chars = []
+        for tc in range(term_cols):
+            code = 0
+            for dy in range(4):
+                for dx in range(2):
+                    gr = tr * 4 + dy
+                    gc = tc * 2 + dx
+                    if gr < rows and gc < cols and grid[gr][gc]:
+                        code |= _BRAILLE_DOT[dy][dx]
+            row_chars.append(chr(_BRAILLE_BASE + code))
+        lines.append("".join(row_chars))
+    return lines
+
+
+def _braille_dominant_color(grid, rows, cols, tr, tc, ww):
+    """Pick the curses color pair for a Braille cell based on majority vote.
+
+    Examines the 2×4 block of grid cells that map to terminal position (tr, tc)
+    and returns the color pair of the most common non-dead state.
+    """
+    counts = {}  # color_pair -> count
+    for dy in range(4):
+        for dx in range(2):
+            gr = tr * 4 + dy
+            gc = tc * 2 + dx
+            if gr < rows and gc < cols:
+                age = grid[gr][gc]
+                if age:
+                    if ww:
+                        cp = _wireworld_color(age)
+                    else:
+                        cp = _age_color(age)
+                    counts[cp] = counts.get(cp, 0) + 1
+    if not counts:
+        return 1  # default green for empty
+    return max(counts, key=counts.get)
+
+
 # --- Animated GIF Export ---
 
 # RGB palette matching the terminal aging colors
@@ -2254,6 +2320,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
     editing = False
     show_stats = False
     detect_enabled = False
+    braille_mode = False
     cursor_r, cursor_c = rows // 2, cols // 2
     delay = speed
     pop_history = []
@@ -2315,8 +2382,19 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         else:
             grid_max_x = max_x
 
-        vis_rows = min(rows, max_y - 1)
-        vis_cols = min(cols, (grid_max_x - 1) // 2)
+        # In Braille mode (non-editing), each terminal cell = 2×4 grid cells
+        braille_term_rows = 0
+        braille_term_cols = 0
+        if braille_mode and not editing:
+            vis_rows_term = max_y - 1
+            vis_cols_term = grid_max_x - 1
+            vis_rows = min(rows, vis_rows_term * 4)
+            vis_cols = min(cols, vis_cols_term * 2)
+            braille_term_rows = (vis_rows + 3) // 4
+            braille_term_cols = (vis_cols + 1) // 2
+        else:
+            vis_rows = min(rows, max_y - 1)
+            vis_cols = min(cols, (grid_max_x - 1) // 2)
 
         # Precompute selection bounds
         sel_min_r = sel_max_r = sel_min_c = sel_max_c = -1
@@ -2335,42 +2413,58 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                         paste_cells.add((gr, gc))
 
         # Draw grid
-        for r in range(vis_rows):
-            for c in range(vis_cols):
-                age = grid[r][c]
-                cell_str = "\u2588\u2588" if age else "  "
-                if editing and r == cursor_r and c == cursor_c and not pasting:
-                    if ww:
-                        if age == WW_HEAD:
-                            attr = curses.color_pair(16)
-                        elif age == WW_TAIL:
-                            attr = curses.color_pair(17)
-                        elif age == WW_CONDUCTOR:
-                            attr = curses.color_pair(18)
+        if braille_mode and not editing:
+            # High-density Braille rendering: 2×4 grid cells per terminal cell
+            braille_lines = _render_braille_grid(grid, rows, cols,
+                                                  braille_term_rows,
+                                                  braille_term_cols)
+            for tr in range(len(braille_lines)):
+                for tc in range(len(braille_lines[tr])):
+                    ch = braille_lines[tr][tc]
+                    if ch == chr(_BRAILLE_BASE):
+                        continue  # empty — skip for speed
+                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww)
+                    try:
+                        stdscr.addstr(tr, tc, ch, curses.color_pair(cp))
+                    except curses.error:
+                        pass
+        else:
+            for r in range(vis_rows):
+                for c in range(vis_cols):
+                    age = grid[r][c]
+                    cell_str = "\u2588\u2588" if age else "  "
+                    if editing and r == cursor_r and c == cursor_c and not pasting:
+                        if ww:
+                            if age == WW_HEAD:
+                                attr = curses.color_pair(16)
+                            elif age == WW_TAIL:
+                                attr = curses.color_pair(17)
+                            elif age == WW_CONDUCTOR:
+                                attr = curses.color_pair(18)
+                            else:
+                                attr = curses.color_pair(3)
                         else:
-                            attr = curses.color_pair(3)
+                            attr = curses.color_pair(4) if age else curses.color_pair(3)
+                    elif (r, c) in paste_cells:
+                        attr = curses.color_pair(9)
+                        cell_str = "\u2588\u2588"
+                    elif editing and pasting and r == cursor_r and c == cursor_c:
+                        attr = curses.color_pair(9)
+                    elif selecting and sel_min_r <= r <= sel_max_r and sel_min_c <= c <= sel_max_c:
+                        attr = curses.color_pair(8)
+                    elif detected_cells and (r, c) in detected_cells:
+                        attr = curses.color_pair(12)
+                    elif ww:
+                        attr = curses.color_pair(_wireworld_color(age)) if age else curses.color_pair(1)
                     else:
-                        attr = curses.color_pair(4) if age else curses.color_pair(3)
-                elif (r, c) in paste_cells:
-                    attr = curses.color_pair(9)
-                    cell_str = "\u2588\u2588"
-                elif editing and pasting and r == cursor_r and c == cursor_c:
-                    attr = curses.color_pair(9)
-                elif selecting and sel_min_r <= r <= sel_max_r and sel_min_c <= c <= sel_max_c:
-                    attr = curses.color_pair(8)
-                elif detected_cells and (r, c) in detected_cells:
-                    attr = curses.color_pair(12)
-                elif ww:
-                    attr = curses.color_pair(_wireworld_color(age)) if age else curses.color_pair(1)
-                else:
-                    attr = curses.color_pair(_age_color(age)) if age else curses.color_pair(1)
-                try:
-                    stdscr.addstr(r, c * 2, cell_str, attr)
-                except curses.error:
-                    pass
+                        attr = curses.color_pair(_age_color(age)) if age else curses.color_pair(1)
+                    try:
+                        stdscr.addstr(r, c * 2, cell_str, attr)
+                    except curses.error:
+                        pass
 
-        # Draw pattern labels on grid
-        if detect_enabled and detected:
+        # Draw pattern labels on grid (not in Braille mode — coordinates differ)
+        if detect_enabled and detected and not (braille_mode and not editing):
             for name, instances in detected.items():
                 for (mr, mc, h, w, _cells) in instances:
                     label_r = mr - 1 if mr > 0 else mr + h
@@ -2424,14 +2518,15 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
             detect_str = " | DETECT" if detect_enabled else ""
             engine_str = " | NumPy" if _HAS_NUMPY else ""
             sound_str = " | SOUND" if sound.active else ""
-            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
+            braille_str = " | BRAILLE" if braille_mode else ""
+            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
             pass
 
         # Multiplayer: show remote cursor
-        if mp and remote_cursor[0] >= 0:
+        if mp and remote_cursor[0] >= 0 and not (braille_mode and not editing):
             rr, rc = remote_cursor
             if 0 <= rr < vis_rows and 0 <= rc < vis_cols:
                 age = grid[rr][rc]
@@ -2994,6 +3089,8 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     stdscr.nodelay(False)
                     stdscr.getch()
                     stdscr.nodelay(True)
+            elif key == ord("B"):
+                braille_mode = not braille_mode
             elif key == ord("G"):
                 # Export history as animated GIF
                 if len(history) > 1:

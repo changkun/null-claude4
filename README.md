@@ -59,6 +59,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `g`       | Toggle population stats panel     |
 | `d`       | Toggle pattern detection overlay  |
 | `S`       | Toggle sound synthesis            |
+| `B`       | Toggle Braille high-density rendering |
 | `G`       | Export history as animated GIF    |
 | `L`       | Load and run a script             |
 | `[`       | Rewind one generation (auto-pauses) |
@@ -433,6 +434,21 @@ Edge pixels between cells of different states are blended for smooth transitions
 - **CRC32 validation** on all chunks; IDAT data split into 32KB chunks for broad compatibility.
 - **Arbitrary resolution** — cell size is configurable from 1px (thumbnail) to any size. A 240×135 grid at 8px/cell produces 1920×1080 frames.
 - **Grid lines** — optional 1px separators between cells for a blueprint/schematic aesthetic.
+
+## Braille Rendering Mode
+
+Press `B` to toggle high-density Braille rendering. Unicode Braille characters (U+2800–U+28FF) encode a 2×4 dot matrix per terminal cell, meaning each character position represents 8 grid cells instead of 1. This gives 2× horizontal and 4× vertical resolution compared to the classic double-width block renderer.
+
+| Mode    | Terminal 80×24 | Visible grid cells | Density |
+|---------|----------------|--------------------|---------|
+| Classic | 40×23 cells    | ~920               | 1×      |
+| Braille | 160×92 cells   | ~14,720            | ~8×     |
+
+This makes large-scale patterns — Gosper guns, pulsars, Wireworld circuits — dramatically more detailed without needing a larger terminal.
+
+- **Color preservation** — each Braille cell picks its curses color via majority vote of the non-dead cells in its 2×4 block, preserving the age-based color gradient and Wireworld state colors.
+- **Automatic fallback** — entering editor mode temporarily switches back to classic rendering (since editing requires per-cell precision), and Braille resumes when you exit the editor.
+- **Status bar** — shows a `BRAILLE` indicator when active.
 
 ## Design Notes
 
