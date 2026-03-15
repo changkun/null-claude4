@@ -1,6 +1,6 @@
 # Cellular Automaton — Terminal Simulator
 
-A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, the **Ising Model** statistical mechanics spin simulation, the **Cyclic Cellular Automaton** (CCA) spiral wave generator, the **Chimera Grid** multi-rule coexistence mode, **Particle Life** emergent multi-species particle interactions, **Lattice Boltzmann** D2Q9 fluid dynamics, **Boids** flocking/swarming simulation, **Wave Function Collapse** (WFC) constraint-based procedural generation, the **2D Wave Equation** damped membrane simulation, a **split-screen comparison mode** for watching two simulations side-by-side, and supports arbitrary rules via B/S notation.
+A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, the **Falling Sand** particle physics sandbox, **Physarum** slime mold transport networks, the **Abelian Sandpile** self-organized criticality model, **Diffusion-Limited Aggregation** fractal growth, the **Forest Fire** probabilistic cellular automaton, the **Ising Model** statistical mechanics spin simulation, the **Cyclic Cellular Automaton** (CCA) spiral wave generator, the **Chimera Grid** multi-rule coexistence mode, **Particle Life** emergent multi-species particle interactions, **Lattice Boltzmann** D2Q9 fluid dynamics, **Boids** flocking/swarming simulation, **Wave Function Collapse** (WFC) constraint-based procedural generation, the **2D Wave Equation** damped membrane simulation, a **split-screen comparison mode** for watching two simulations side-by-side, a **demo reel** screensaver that auto-cycles through all modes, and supports arbitrary rules via B/S notation.
 
 ## Usage
 
@@ -68,6 +68,9 @@ python3 life.py --script ~/my_script.py            # run a script from a file pa
 python3 life.py --compare life highlife              # split-screen: Life vs HighLife
 python3 life.py --compare B36/S23 forestfire         # split-screen: custom rule vs Forest Fire
 python3 life.py --compare ising grayscott            # split-screen: Ising Model vs Gray-Scott
+python3 life.py --demo                            # demo reel: auto-cycle all 27 modes
+python3 life.py --demo --demo-interval 5          # 5 seconds per mode
+python3 life.py --demo --speed 0.05               # faster simulation steps in demo
 python3 life.py --discover                         # evolve interesting rulesets via GA
 python3 life.py --discover --ga-generations 100    # more generations for deeper search
 python3 life.py --render 100 --palette ember       # 100 PNG frames with ember palette
@@ -111,6 +114,8 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--cell-size`| 8         | Pixel size of each cell for PNG rendering |
 | `--palette`  | `classic` | Color palette for PNG rendering (`classic`, `ember`, `ocean`, `mono`, `matrix`) |
 | `--grid-lines`| off      | Draw 1px grid lines between cells in PNG output |
+| `--demo`     | off       | Demo Reel mode: auto-cycle through all simulation modes as a screensaver/showcase |
+| `--demo-interval` | 10   | Seconds to display each simulation in demo mode |
 | `--compare`  | —         | Split-screen comparison: two rule names (e.g. `--compare life highlife`) |
 | `--no-aa`    | off       | Disable anti-aliasing on cell edges in PNG output |
 | `--output-dir`| `frames` | Output directory for rendered PNG frames |
@@ -1382,6 +1387,30 @@ Press `T` to cycle through four topological surface modes that change how the gr
 - **NumPy backend** — `scipy.signal.convolve2d` only supports toroidal wrapping, so non-torus topologies automatically fall back to the pure Python engine. The `NumPy` indicator in the status bar is hidden when a non-torus topology is active.
 - **HashLife** — the quadtree engine assumes toroidal wrapping. Switching to a non-torus topology while HashLife is active automatically deactivates it and exports the grid back to the standard engine.
 - **Status bar** — shows the topology name (e.g., `Klein Bottle`) when a non-default topology is selected. The torus label is hidden since it's the default.
+
+## Demo Reel — Auto-Showcase Mode
+
+A screensaver/attract mode that automatically cycles through all 27 simulation modes with smooth fade transitions, a title banner, and a progress bar countdown. Great for showing off the full breadth of the project without touching the keyboard.
+
+```bash
+python3 life.py --demo                    # default: 10 seconds per mode
+python3 life.py --demo --demo-interval 5  # 5 seconds per mode
+python3 life.py --demo --speed 0.05       # faster simulation steps
+```
+
+Each mode auto-initializes with good defaults. A centered banner shows the current mode name and index (e.g., "3/27 Day & Night") with a progress bar counting down to the next transition. Modes transition with an 8-frame crossfade effect.
+
+### Controls (Demo mode)
+
+| Key             | Action                                      |
+|-----------------|---------------------------------------------|
+| `Space`         | Pause and drop into normal interactive mode  |
+| `n` / `Right`   | Skip to next mode                           |
+| `p` / `Left`    | Go to previous mode                         |
+| `+` / `-`       | Adjust simulation speed                     |
+| `q` / `Esc`     | Quit                                        |
+
+Pressing Space pauses the demo and enters the full interactive mode for the current simulation — you can edit, save, adjust parameters, etc. When you quit interactive mode, the demo resumes where it left off.
 
 ## Split-Screen Comparison Mode
 

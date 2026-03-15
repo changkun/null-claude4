@@ -9305,6 +9305,314 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         time.sleep(delay)
 
 
+# --- Demo Reel (Auto-Showcase) Mode ---
+
+
+def _demo_init_mode(rule_name, rows, cols):
+    """Initialise module-level state + grid for a given RULE_NAMES entry."""
+    rule = RULES[rule_name]
+    grid = make_grid(rows, cols)
+    if _is_wireworld(rule):
+        place_wireworld_pattern(grid, "ww_clock")
+    elif _is_grayscott(rule):
+        _gs_init(rows, cols)
+        grid = _gs_to_grid(rows, cols)
+    elif _is_elementary(rule):
+        _eca_init(cols)
+        grid = _eca_to_grid(rows, cols)
+    elif _is_lenia(rule):
+        preset = LENIA_PRESETS[LENIA_PRESET_NAMES[_lenia_preset_idx]]
+        _lenia_init(rows, cols, preset.get("seed", "orbium"))
+        grid = _lenia_to_grid(rows, cols)
+    elif _is_turmite(rule):
+        _turmite_init(rows, cols)
+        grid = _turmite_to_grid(rows, cols)
+    elif _is_wator(rule):
+        _wator_init(rows, cols)
+        grid = _wator_to_grid(rows, cols)
+    elif _is_fallingsand(rule):
+        _fs_init(rows, cols)
+        grid = _fs_to_grid(rows, cols)
+    elif _is_physarum(rule):
+        _phys_init(rows, cols)
+        grid = _phys_to_grid(rows, cols)
+    elif _is_sandpile(rule):
+        _sp_init(rows, cols)
+        grid = _sp_to_grid(rows, cols)
+    elif _is_dla(rule):
+        _dla_init(rows, cols)
+        grid = _dla_to_grid(rows, cols)
+    elif _is_forestfire(rule):
+        _ff_init(rows, cols)
+        grid = _ff_to_grid(rows, cols)
+    elif _is_ising(rule):
+        _ising_init(rows, cols)
+        grid = _ising_to_grid(rows, cols)
+    elif _is_cca(rule):
+        _cca_init(rows, cols)
+        grid = _cca_to_grid(rows, cols)
+    elif _is_chimera(rule):
+        _chimera_init(rows, cols)
+        grid = _chimera_to_grid(rows, cols)
+    elif _is_particlelife(rule):
+        _pl_init(rows, cols)
+        grid = _pl_to_grid(rows, cols)
+    elif _is_fluid(rule):
+        _lbm_init(rows, cols)
+        grid = _lbm_to_grid(rows, cols)
+    elif _is_boids(rule):
+        _boids_init(rows, cols)
+        grid = _boids_to_grid(rows, cols)
+    elif _is_wfc(rule):
+        _wfc_init(rows, cols)
+        grid = _wfc_to_grid(rows, cols)
+    elif _is_wave(rule):
+        _wave_init(rows, cols)
+        grid = _wave_to_grid(rows, cols)
+    else:
+        # B/S rule – random fill
+        import random as _rnd
+        for r in range(rows):
+            for c in range(cols):
+                grid[r][c] = _rnd.randint(0, 1)
+    return rule, grid
+
+
+def run_demo(stdscr, rows, cols, interval, speed):
+    """Demo Reel mode: cycle through every simulation with smooth transitions."""
+    curses.curs_set(0)
+    stdscr.nodelay(True)
+    curses.start_color()
+    curses.use_default_colors()
+    curses.init_pair(1, curses.COLOR_GREEN, -1)
+    curses.init_pair(2, curses.COLOR_WHITE, -1)
+    curses.init_pair(3, curses.COLOR_BLACK, curses.COLOR_YELLOW)
+    curses.init_pair(4, curses.COLOR_BLACK, curses.COLOR_GREEN)
+    curses.init_pair(5, curses.COLOR_CYAN, -1)
+    curses.init_pair(6, curses.COLOR_BLUE, -1)
+    curses.init_pair(7, curses.COLOR_MAGENTA, -1)
+    curses.init_pair(8, curses.COLOR_BLACK, curses.COLOR_CYAN)
+    curses.init_pair(9, curses.COLOR_BLACK, curses.COLOR_MAGENTA)
+    curses.init_pair(10, curses.COLOR_BLACK, curses.COLOR_RED)
+    curses.init_pair(11, curses.COLOR_WHITE, curses.COLOR_RED)
+    curses.init_pair(12, curses.COLOR_YELLOW, -1)
+    curses.init_pair(13, curses.COLOR_RED, -1)
+    curses.init_pair(14, curses.COLOR_BLUE, -1)
+    curses.init_pair(15, curses.COLOR_YELLOW, -1)
+    curses.init_pair(16, curses.COLOR_BLACK, curses.COLOR_BLUE)
+    curses.init_pair(17, curses.COLOR_BLACK, curses.COLOR_RED)
+    curses.init_pair(18, curses.COLOR_BLACK, curses.COLOR_YELLOW)
+    curses.init_pair(19, curses.COLOR_BLUE, -1)
+    curses.init_pair(20, curses.COLOR_WHITE, -1)
+    curses.init_pair(21, curses.COLOR_RED, -1)
+
+    global _topology
+    _topology = TOPOLOGIES[0]
+
+    total_modes = len(RULE_NAMES)
+    demo_idx = 0
+    delay = speed
+
+    # Transition state: "fade_out", "fade_in", "running"
+    transition_state = "fade_in"
+    transition_frames = 0
+    FADE_FRAMES = 8  # frames for fade effect
+
+    # Init first mode
+    rule, grid = _demo_init_mode(RULE_NAMES[demo_idx], rows, cols)
+    generation = 0
+    mode_start = time.monotonic()
+
+    while True:
+        max_y, max_x = stdscr.getmaxyx()
+        vis_rows = min(rows, max_y - 2)  # leave room for status + banner
+        vis_cols = min(cols, max_x // 2)
+
+        # Detect mode flags for color dispatch
+        ww = _is_wireworld(rule)
+        gs = _is_grayscott(rule)
+        eca = _is_elementary(rule)
+        lenia = _is_lenia(rule)
+        turmite = _is_turmite(rule)
+        wator = _is_wator(rule)
+        fallingsand = _is_fallingsand(rule)
+        physarum = _is_physarum(rule)
+        sandpile = _is_sandpile(rule)
+        dla = _is_dla(rule)
+        forestfire = _is_forestfire(rule)
+        ising = _is_ising(rule)
+        cca = _is_cca(rule)
+        chimera = _is_chimera(rule)
+        particlelife = _is_particlelife(rule)
+        fluid = _is_fluid(rule)
+        boids = _is_boids(rule)
+        wave = _is_wave(rule)
+
+        # Compute fade dimming
+        fade_dim = False
+        if transition_state == "fade_out":
+            fade_dim = True
+        elif transition_state == "fade_in" and transition_frames < FADE_FRAMES // 2:
+            fade_dim = True
+
+        # --- Render grid (mirrors main run() renderer) ---
+        stdscr.erase()
+        for r in range(vis_rows):
+            for c in range(vis_cols):
+                age = grid[r][c]
+                cell_str = "\u2588\u2588" if age else "  "
+                if fluid:
+                    attr = curses.color_pair(_lbm_color(age))
+                    cell_str = "\u2588\u2588"
+                elif wave:
+                    attr = curses.color_pair(_wave_color(age))
+                    cell_str = "\u2588\u2588"
+                elif forestfire:
+                    attr = curses.color_pair(_ff_color(age))
+                    cell_str = "\u2588\u2588" if age else "  "
+                elif ising:
+                    attr = curses.color_pair(_ising_color(age))
+                    cell_str = "\u2588\u2588"
+                elif cca:
+                    attr = curses.color_pair(_cca_color(age))
+                    cell_str = "\u2588\u2588"
+                elif chimera:
+                    zid = _chimera_zone[r][c] if r < _chimera_rows and c < _chimera_cols else 0
+                    attr = curses.color_pair(_chimera_color(age, zid))
+                    cell_str = "\u2588\u2588" if age else "  "
+                elif dla:
+                    attr = curses.color_pair(_dla_color(age))
+                    cell_str = "\u2588\u2588" if age else "  "
+                elif sandpile:
+                    attr = curses.color_pair(_sp_color(age))
+                    cell_str = "\u2588\u2588" if age else "  "
+                elif fallingsand:
+                    attr = curses.color_pair(_fs_color(age))
+                    cell_str = "\u2588\u2588" if age else "  "
+                elif wator:
+                    attr = curses.color_pair(_wator_color(age))
+                    cell_str = "\u2588\u2588" if age else "  "
+                elif turmite:
+                    attr = curses.color_pair(_turmite_color(age))
+                    cell_str = "\u2588\u2588" if age else "  "
+                elif particlelife:
+                    attr = curses.color_pair(_pl_color(age))
+                    cell_str = "\u2588\u2588" if age else "  "
+                elif boids:
+                    attr = curses.color_pair(_boids_color(age))
+                    cell_str = "\u2588\u2588" if age else "  "
+                elif gs or lenia or physarum:
+                    attr = curses.color_pair(_grayscott_color(age))
+                    cell_str = "\u2588\u2588" if age > 3 else "  "
+                elif ww:
+                    attr = curses.color_pair(_wireworld_color(age)) if age else curses.color_pair(1)
+                elif age:
+                    attr = curses.color_pair(_age_color(age))
+                else:
+                    attr = curses.color_pair(1)
+                if fade_dim:
+                    attr = (attr & ~curses.A_BOLD) | curses.A_DIM
+                if cell_str != "  ":
+                    try:
+                        stdscr.addstr(r, c * 2, cell_str, attr)
+                    except curses.error:
+                        pass
+
+        # --- Banner overlay ---
+        rule_label = rule.get("name", RULE_NAMES[demo_idx])
+        elapsed = time.monotonic() - mode_start
+        remaining = max(0, interval - elapsed)
+        progress_pct = min(1.0, elapsed / interval) if interval > 0 else 1.0
+
+        # Banner line 1: mode name (centered, bold)
+        banner = f" {demo_idx + 1}/{total_modes}  {rule_label} "
+        bx = max(0, (max_x - len(banner)) // 2)
+        try:
+            stdscr.addstr(0, bx, banner[:max_x - 1],
+                          curses.color_pair(2) | curses.A_BOLD | curses.A_REVERSE)
+        except curses.error:
+            pass
+
+        # Progress bar (thin, at row 1)
+        bar_width = min(max_x - 4, 40)
+        filled = int(bar_width * progress_pct)
+        bar_filled = "\u2588" * filled
+        bar_empty = "\u2500" * (bar_width - filled)
+        bar_str = f" [{bar_filled}{bar_empty}] {int(remaining)}s "
+        bar_x = max(0, (max_x - len(bar_str)) // 2)
+        try:
+            stdscr.addstr(1, bar_x, bar_str[:max_x - 1],
+                          curses.color_pair(2) | curses.A_DIM)
+        except curses.error:
+            pass
+
+        # Status bar at bottom
+        status = f" DEMO REEL | Gen {generation} | [{demo_idx + 1}/{total_modes}] | [space]pause [n]ext [p]rev [q]uit"
+        try:
+            stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1],
+                          curses.color_pair(2) | curses.A_REVERSE)
+        except curses.error:
+            pass
+
+        stdscr.refresh()
+
+        # --- Handle transitions ---
+        if transition_state == "fade_out":
+            transition_frames += 1
+            if transition_frames >= FADE_FRAMES:
+                # Switch to next mode
+                rule, grid = _demo_init_mode(RULE_NAMES[demo_idx], rows, cols)
+                generation = 0
+                mode_start = time.monotonic()
+                transition_state = "fade_in"
+                transition_frames = 0
+            time.sleep(delay * 0.5)
+            continue
+        elif transition_state == "fade_in":
+            transition_frames += 1
+            if transition_frames >= FADE_FRAMES:
+                transition_state = "running"
+
+        # --- Input ---
+        key = stdscr.getch()
+        if key == ord("q") or key == 27:
+            break
+        elif key == ord(" "):
+            # Drop into normal interactive mode with current simulation
+            run(stdscr, grid, delay, rule)
+            # After returning from interactive mode, resume demo
+            mode_start = time.monotonic()
+        elif key == ord("n") or key == curses.KEY_RIGHT:
+            # Skip to next mode
+            demo_idx = (demo_idx + 1) % total_modes
+            transition_state = "fade_out"
+            transition_frames = 0
+            continue
+        elif key == ord("p") or key == curses.KEY_LEFT:
+            # Go to previous mode
+            demo_idx = (demo_idx - 1) % total_modes
+            transition_state = "fade_out"
+            transition_frames = 0
+            continue
+        elif key == ord("+") or key == ord("="):
+            delay = max(0.01, delay - 0.02)
+        elif key == ord("-") or key == ord("_"):
+            delay = min(2.0, delay + 0.02)
+
+        # --- Auto-advance ---
+        if transition_state == "running" and time.monotonic() - mode_start >= interval:
+            demo_idx = (demo_idx + 1) % total_modes
+            transition_state = "fade_out"
+            transition_frames = 0
+            continue
+
+        # --- Step simulation ---
+        grid = step(grid, rule)
+        generation += 1
+
+        time.sleep(delay)
+
+
 # --- Split-Screen Comparison Mode ---
 
 
@@ -10920,6 +11228,19 @@ def main():
              "Options: " + ", ".join(WAVE_PRESETS.keys()),
     )
     parser.add_argument(
+        "--demo",
+        action="store_true",
+        default=False,
+        help="Demo Reel mode: auto-cycle through all simulation modes as a screensaver/showcase",
+    )
+    parser.add_argument(
+        "--demo-interval",
+        type=float,
+        default=10.0,
+        metavar="SECS",
+        help="Seconds to show each simulation in demo mode (default: 10)",
+    )
+    parser.add_argument(
         "--discover",
         action="store_true",
         default=False,
@@ -10998,6 +11319,12 @@ def main():
     args = parser.parse_args()
 
     global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx, _fs_preset_idx, _sp_preset_idx, _dla_preset_idx, _ff_preset_idx, _chimera_preset_idx, _pl_preset_idx, _lbm_preset_idx, _boids_preset_idx, _wfc_preset_idx
+
+    # Demo Reel mode: auto-cycle showcase of all simulations
+    if args.demo:
+        curses.wrapper(lambda stdscr: run_demo(
+            stdscr, args.rows, args.cols, args.demo_interval, args.speed))
+        return
 
     # Headless batch-render mode: output PNG frames without terminal UI
     if args.render is not None:
