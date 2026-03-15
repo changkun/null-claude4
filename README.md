@@ -38,6 +38,7 @@ python3 life.py --rule B2/S                        # custom rule via B/S notatio
 | `r`       | Randomize the grid                |
 | `R`       | Cycle to next ruleset             |
 | `e`       | Enter editor mode (auto-pauses)   |
+| `g`       | Toggle population stats panel     |
 | `q`       | Quit                              |
 
 ### Editor Mode
@@ -52,6 +53,7 @@ Press `e` to enter an interactive cell editor. The simulation pauses and a curso
 | `l`             | Load a pattern (picker or path) |
 | `c`             | Clear the entire grid     |
 | `R`             | Cycle to next ruleset     |
+| `g`             | Toggle population stats panel |
 | `e`             | Exit editor, stay paused  |
 | `q`             | Quit                      |
 
@@ -79,6 +81,18 @@ All rules use Birth/Survival notation — a cell is born if it has exactly B nei
 | `maze`     | B3/S12345  | Generates maze-like corridors |
 
 Use `--rule <preset>` or `--rule B.../S...` for custom rules. Press `R` at runtime to cycle through presets.
+
+## Population Statistics Dashboard
+
+Press `g` to toggle a 35-column side panel that provides real-time population analytics:
+
+- **Current population** — live cell count
+- **Peak population** — highest count seen, and the generation it occurred at
+- **Growth rate** — percentage change from the previous generation
+- **Generation counter**
+- **ASCII bar chart** — a scrolling sparkline using Unicode block characters (`▁▂▃▄▅▆▇█`) showing population over recent generations, auto-scaled to the data maximum
+
+Population history is kept in a rolling 500-generation buffer. When the panel is hidden, a compact `Pop N` count appears in the status bar. The grid drawing area shrinks automatically to make room for the panel when it's visible.
 
 ## Design Notes
 

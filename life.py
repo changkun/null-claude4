@@ -247,6 +247,119 @@ def _age_color(age):
         return 7   # magenta — ancient
 
 
+def _count_population(grid):
+    """Count the number of live cells in the grid."""
+    return sum(1 for row in grid for cell in row if cell)
+
+
+def _draw_stats_panel(stdscr, pop_history, generation, panel_width, max_y, max_x):
+    """Draw the population statistics side panel."""
+    panel_x = max_x - panel_width
+    chart_height = max(max_y - 12, 5)  # Reserve rows for stats below chart
+
+    # Draw vertical border
+    for y in range(max_y - 1):
+        try:
+            stdscr.addstr(y, panel_x - 1, "\u2502", curses.color_pair(2))
+        except curses.error:
+            pass
+
+    # Current stats
+    cur_pop = pop_history[-1] if pop_history else 0
+    peak_pop = max(pop_history) if pop_history else 0
+    peak_gen = pop_history.index(peak_pop) if pop_history else 0
+    # Adjust peak_gen to absolute generation number
+    first_gen = generation - len(pop_history) + 1
+    peak_gen_abs = first_gen + peak_gen
+
+    # Growth rate (compare to previous generation)
+    if len(pop_history) >= 2:
+        prev = pop_history[-2]
+        if prev > 0:
+            growth = ((cur_pop - prev) / prev) * 100
+        else:
+            growth = 100.0 if cur_pop > 0 else 0.0
+        growth_str = f"{growth:+.1f}%"
+    else:
+        growth_str = "N/A"
+
+    # Title
+    try:
+        stdscr.addstr(0, panel_x + 1, " POPULATION STATS ", curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
+    except curses.error:
+        pass
+
+    # Stats lines
+    stats = [
+        f"Population: {cur_pop}",
+        f"Peak:       {peak_pop} (gen {peak_gen_abs})",
+        f"Growth:     {growth_str}",
+        f"Generation: {generation}",
+    ]
+    for i, line in enumerate(stats):
+        try:
+            stdscr.addstr(2 + i, panel_x + 1, line[:panel_width - 2], curses.color_pair(2))
+        except curses.error:
+            pass
+
+    # Sparkline chart
+    chart_top = 7
+    chart_w = panel_width - 4  # leave margins
+    if chart_w < 3 or chart_height < 3:
+        return
+
+    # Use the most recent chart_w data points
+    data = list(pop_history[-chart_w:])
+    if not data:
+        return
+
+    data_max = max(data) if max(data) > 0 else 1
+
+    # Chart title
+    try:
+        stdscr.addstr(chart_top, panel_x + 1, "Population over time:", curses.color_pair(2))
+    except curses.error:
+        pass
+
+    # Y-axis labels and bars
+    chart_start_y = chart_top + 1
+    bar_chars = [" ", "\u2581", "\u2582", "\u2583", "\u2584", "\u2585", "\u2586", "\u2587", "\u2588"]
+
+    # Draw the chart using vertical bar characters (one column per data point)
+    for col_i, val in enumerate(data):
+        bar_height = (val / data_max) * chart_height if data_max > 0 else 0
+        full_blocks = int(bar_height)
+        frac = bar_height - full_blocks
+
+        for row_i in range(chart_height):
+            y = chart_start_y + chart_height - 1 - row_i
+            x = panel_x + 2 + col_i
+            if x >= max_x - 1 or y >= max_y - 1:
+                continue
+            if row_i < full_blocks:
+                ch = "\u2588"
+                color = curses.color_pair(1)
+            elif row_i == full_blocks and frac > 0.1:
+                idx = int(frac * 8)
+                ch = bar_chars[max(1, min(idx, 8))]
+                color = curses.color_pair(1)
+            else:
+                ch = " "
+                color = curses.color_pair(2)
+            try:
+                stdscr.addstr(y, x, ch, color)
+            except curses.error:
+                pass
+
+    # Y-axis scale labels
+    try:
+        top_label = str(data_max)
+        stdscr.addstr(chart_start_y, panel_x + 2 + chart_w, top_label[:5], curses.color_pair(2))
+        stdscr.addstr(chart_start_y + chart_height - 1, panel_x + 2 + chart_w, "0", curses.color_pair(2))
+    except curses.error:
+        pass
+
+
 def run(stdscr, grid, speed, rule=None):
     if rule is None:
         rule = RULES["life"]
@@ -266,8 +379,11 @@ def run(stdscr, grid, speed, rule=None):
     generation = 0
     paused = False
     editing = False
+    show_stats = False
     cursor_r, cursor_c = rows // 2, cols // 2
     delay = speed
+    pop_history = []
+    max_pop_history = 500  # Rolling window of population data
     # Find current rule index for cycling
     rule_idx = -1
     for i, name in enumerate(RULE_NAMES):
@@ -276,10 +392,24 @@ def run(stdscr, grid, speed, rule=None):
             break
 
     while True:
+        # Track population
+        pop = _count_population(grid)
+        pop_history.append(pop)
+        if len(pop_history) > max_pop_history:
+            pop_history.pop(0)
+
         stdscr.erase()
         max_y, max_x = stdscr.getmaxyx()
+
+        # Calculate panel width and available grid space
+        panel_width = 35
+        if show_stats and max_x > panel_width + 20:
+            grid_max_x = max_x - panel_width
+        else:
+            grid_max_x = max_x
+
         vis_rows = min(rows, max_y - 1)
-        vis_cols = min(cols, (max_x - 1) // 2)
+        vis_cols = min(cols, (grid_max_x - 1) // 2)
 
         # Draw grid
         for r in range(vis_rows):
@@ -295,12 +425,17 @@ def run(stdscr, grid, speed, rule=None):
                 except curses.error:
                     pass
 
+        # Draw stats panel if enabled
+        if show_stats and max_x > panel_width + 20:
+            _draw_stats_panel(stdscr, pop_history, generation, panel_width, max_y, max_x)
+
         # Status bar
         rule_label = rule.get("name", "Custom")
         if editing:
             status = f" EDITOR ({cursor_r},{cursor_c}) | Gen {generation} | {rule_label} | [arrows]move [enter/space]toggle [s]ave [l]oad [c]lear [R]ule [e]exit editor [q]uit"
         else:
-            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {'PAUSED' if paused else 'Running'} | [space]pause [e]dit [+/-]speed [r]andom [R]ule [n]ext [q]uit"
+            pop_str = f" | Pop {pop}" if not show_stats else ""
+            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {'PAUSED' if paused else 'Running'}{pop_str} | [space]pause [e]dit [g]raph [+/-]speed [r]andom [R]ule [n]ext [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
@@ -387,6 +522,8 @@ def run(stdscr, grid, speed, rule=None):
                 else:
                     rule_idx = 0
                     rule = RULES[RULE_NAMES[0]]
+            elif key == ord("g"):
+                show_stats = not show_stats
             elif key == ord("e"):
                 editing = False
         else:
@@ -413,6 +550,8 @@ def run(stdscr, grid, speed, rule=None):
             elif key == ord("n") and paused:
                 grid = step(grid, rule)
                 generation += 1
+            elif key == ord("g"):
+                show_stats = not show_stats
             elif key == ord("e"):
                 paused = True
                 editing = True
