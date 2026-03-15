@@ -41,6 +41,67 @@ RULES = {
 
 RULE_NAMES = list(RULES.keys())
 
+# --- Topology Modes ---
+# Each topology defines how coordinates wrap at grid boundaries.
+TOPO_TORUS = "torus"          # both axes wrap normally
+TOPO_KLEIN = "klein"          # horizontal wraps with row-reversal (Klein bottle)
+TOPO_MOBIUS = "mobius"        # horizontal wraps with row-reversal, vertical bounded
+TOPO_BOUNDED = "bounded"      # no wrapping — edges are dead
+
+TOPOLOGIES = [TOPO_TORUS, TOPO_KLEIN, TOPO_MOBIUS, TOPO_BOUNDED]
+
+TOPOLOGY_LABELS = {
+    TOPO_TORUS: "Torus",
+    TOPO_KLEIN: "Klein Bottle",
+    TOPO_MOBIUS: "Möbius Strip",
+    TOPO_BOUNDED: "Bounded",
+}
+
+# Current topology — module-level default so step functions can access it.
+_topology = TOPO_TORUS
+
+
+def _wrap_coords(r, c, rows, cols, topology=None):
+    """Map (r, c) to valid grid coordinates under the given topology.
+
+    Returns (nr, nc) or None if the cell is out-of-bounds (bounded mode).
+    For Klein bottle, wrapping horizontally reverses the row.
+    For Möbius strip, wrapping horizontally reverses the row; vertical is bounded.
+    """
+    if topology is None:
+        topology = _topology
+
+    if topology == TOPO_TORUS:
+        return r % rows, c % cols
+
+    if topology == TOPO_KLEIN:
+        # Vertical axis wraps normally
+        r = r % rows
+        # Horizontal axis: if we crossed a boundary, flip row
+        if c < 0 or c >= cols:
+            c = c % cols
+            r = (rows - 1 - r)
+        return r, c
+
+    if topology == TOPO_MOBIUS:
+        # Vertical axis: bounded (no wrap)
+        if r < 0 or r >= rows:
+            return None
+        # Horizontal axis: wraps with row reversal
+        if c < 0 or c >= cols:
+            c = c % cols
+            r = (rows - 1 - r)
+        return r, c
+
+    if topology == TOPO_BOUNDED:
+        if r < 0 or r >= rows or c < 0 or c >= cols:
+            return None
+        return r, c
+
+    # Fallback: torus
+    return r % rows, c % cols
+
+
 # --- Wireworld Cell States ---
 WW_EMPTY = 0       # empty / background
 WW_HEAD = 1         # electron head
@@ -275,15 +336,15 @@ class ScriptEngine:
                            if engine._grid[r][c])
 
             def neighbours(self_, r, c):
-                """Count live neighbours of cell (r, c) with toroidal wrapping."""
+                """Count live neighbours of cell (r, c) with topology-aware wrapping."""
                 rows, cols = engine._grid_rows, engine._grid_cols
                 count = 0
                 for dr in (-1, 0, 1):
                     for dc in (-1, 0, 1):
                         if dr == 0 and dc == 0:
                             continue
-                        nr, nc = (r + dr) % rows, (c + dc) % cols
-                        if engine._grid[nr][nc]:
+                        coords = _wrap_coords(r + dr, c + dc, rows, cols)
+                        if coords is not None and engine._grid[coords[0]][coords[1]]:
                             count += 1
                 return count
 
@@ -904,6 +965,10 @@ def step(grid, rule=None):
 
 def _step_numpy(grid, rule):
     """Vectorized backend using SciPy 2D convolution — O(1) per cell."""
+    # For non-torus topologies, fall back to the Python engine which handles
+    # Klein bottle, Möbius strip, and bounded topologies correctly.
+    if _topology != TOPO_TORUS:
+        return _step_python(grid, rule)
     birth, survival = rule["b"], rule["s"]
     rows, cols = len(grid), len(grid[0])
     # Build age array and binary alive mask
@@ -950,8 +1015,9 @@ def _neighbours(grid, r, c, rows, cols):
         for dc in (-1, 0, 1):
             if dr == 0 and dc == 0:
                 continue
-            nr, nc = (r + dr) % rows, (c + dc) % cols
-            count += 1 if grid[nr][nc] else 0
+            coords = _wrap_coords(r + dr, c + dc, rows, cols)
+            if coords is not None:
+                count += 1 if grid[coords[0]][coords[1]] else 0
     return count
 
 
@@ -975,8 +1041,8 @@ def _step_wireworld(grid):
                     for dc in (-1, 0, 1):
                         if dr == 0 and dc == 0:
                             continue
-                        nr, nc = (r + dr) % rows, (c + dc) % cols
-                        if grid[nr][nc] == WW_HEAD:
+                        coords = _wrap_coords(r + dr, c + dc, rows, cols)
+                        if coords is not None and grid[coords[0]][coords[1]] == WW_HEAD:
                             heads += 1
                 new[r][c] = WW_HEAD if heads in (1, 2) else WW_CONDUCTOR
     return new
@@ -984,6 +1050,8 @@ def _step_wireworld(grid):
 
 def _step_wireworld_numpy(grid):
     """Wireworld step function — vectorized NumPy backend."""
+    if _topology != TOPO_TORUS:
+        return _step_wireworld(grid)
     arr = np.array(grid, dtype=np.int32)
     rows, cols = arr.shape
     # Count electron head neighbours for each cell
@@ -2717,6 +2785,11 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
     # Sound synthesis engine
     sound = SoundEngine()
 
+    # Topology mode
+    global _topology
+    topo_idx = 0  # index into TOPOLOGIES
+    _topology = TOPOLOGIES[topo_idx]
+
     # Script engine state
     se = script_engine or ScriptEngine()
     se.bind_grid(grid)
@@ -2891,9 +2964,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
             pop_str = f" | Pop {pop}" if not show_stats else ""
             state_str = 'REWOUND' if browsing_history else ('PAUSED' if paused else 'Running')
             detect_str = " | DETECT" if detect_enabled else ""
-            engine_str = " | NumPy" if (_HAS_NUMPY and not hashlife_active) else ""
+            engine_str = " | NumPy" if (_HAS_NUMPY and not hashlife_active and _topology == TOPO_TORUS) else ""
             sound_str = " | SOUND" if sound.active else ""
             braille_str = " | BRAILLE" if braille_mode else ""
+            topo_str = f" | {TOPOLOGY_LABELS[_topology]}" if _topology != TOPO_TORUS else ""
             if hashlife_active:
                 hl_exp = hashlife.get_step_exponent()
                 if hl_exp is None:
@@ -2902,7 +2976,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 hashlife_str = f" | HASHLIFE 2^{hl_exp} ({hl_gens} gens/step) [<>]speed"
             else:
                 hashlife_str = ""
-            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{hashlife_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
+            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{topo_str}{hashlife_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [T]opo [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
@@ -3492,6 +3566,15 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     stdscr.nodelay(True)
             elif key == ord("B"):
                 braille_mode = not braille_mode
+            elif key == ord("T"):
+                # Cycle topology: Torus -> Klein Bottle -> Möbius Strip -> Bounded
+                topo_idx = (topo_idx + 1) % len(TOPOLOGIES)
+                _topology = TOPOLOGIES[topo_idx]
+                # Disable HashLife for non-torus topologies (it assumes torus)
+                if _topology != TOPO_TORUS and hashlife_active:
+                    grid = hashlife.to_grid(rows, cols)
+                    generation = hashlife.generation
+                    hashlife_active = False
             elif key == ord("H"):
                 # Toggle HashLife hyperspeed mode (only for Life-like B/S rules)
                 if not ww and not se.custom_rule_fn:

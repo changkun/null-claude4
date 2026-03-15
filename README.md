@@ -60,6 +60,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `d`       | Toggle pattern detection overlay  |
 | `S`       | Toggle sound synthesis            |
 | `B`       | Toggle Braille high-density rendering |
+| `T`       | Cycle topology (Torus → Klein Bottle → Möbius Strip → Bounded) |
 | `H`       | Toggle HashLife hyperspeed mode   |
 | `<` / `>` | Decrease / increase HashLife step exponent |
 | `G`       | Export history as animated GIF    |
@@ -280,7 +281,7 @@ Scripts have access to a `grid` object and several global functions:
 |-----|-------------|
 | `grid.get(r, c)` / `grid.set(r, c, val)` | Read/write individual cells |
 | `grid.clear()` / `grid.population()` | Clear grid or count live cells |
-| `grid.neighbours(r, c)` | Count live neighbours (toroidal) |
+| `grid.neighbours(r, c)` | Count live neighbours (topology-aware) |
 | `grid.fill_random(density)` | Fill grid randomly |
 | `grid.place(pattern, r, c)` | Place a built-in pattern |
 | `grid.stamp(cells, r, c)` | Stamp a 2D list onto the grid |
@@ -323,7 +324,7 @@ The simulation engine has two backends and automatically selects the best one av
 - **NumPy/SciPy backend** — uses `scipy.signal.convolve2d` to compute all neighbor counts for the entire grid in a single vectorized operation. This delivers 50–200× speedups on large grids, making 1000×1000+ simulations interactive. The status bar shows `NumPy` when this backend is active.
 - **Pure Python backend** — the original cell-by-cell engine. No dependencies beyond the standard library. Used automatically when NumPy/SciPy are not installed.
 
-Both backends produce identical results — same toroidal wrapping, same cell aging, same ruleset support. To enable the fast backend:
+Both backends produce identical results — same cell aging and ruleset support. The NumPy backend uses `convolve2d(boundary="wrap")` which only supports toroidal wrapping; non-torus topologies automatically fall back to the Python engine. To enable the fast backend:
 
 ```bash
 pip install numpy scipy
@@ -485,9 +486,26 @@ The status bar shows `HASHLIFE 2^N (M gens/step) [<>]speed` when active. The gen
 - Editor changes, rule switches, randomization, and history forks automatically re-sync or deactivate HashLife.
 - History recording is throttled during hyperspeed (only the latest frame is stored per step) to avoid filling the 10,000-generation buffer instantly.
 
+## Grid Topology
+
+Press `T` to cycle through four topological surface modes that change how the grid edges connect. Each topology produces fundamentally different emergent behavior — gliders that return mirror-flipped, oscillators that break symmetry, and patterns that interact with dead boundaries.
+
+| Topology        | Description |
+|-----------------|-------------|
+| **Torus** (default) | Both axes wrap normally — the classic behavior. A glider leaving the right edge reappears on the left at the same row. |
+| **Klein Bottle** | Both axes wrap, but the horizontal wrap reverses the row. A glider exiting right returns on the left *mirrored vertically*. |
+| **Möbius Strip** | Horizontal axis wraps with row reversal (like Klein), but vertical edges are bounded — cells beyond the top/bottom are dead. |
+| **Bounded** | No wrapping at all — all four edges are dead zones. Patterns that hit the boundary interact with emptiness. |
+
+### Interactions
+
+- **NumPy backend** — `scipy.signal.convolve2d` only supports toroidal wrapping, so non-torus topologies automatically fall back to the pure Python engine. The `NumPy` indicator in the status bar is hidden when a non-torus topology is active.
+- **HashLife** — the quadtree engine assumes toroidal wrapping. Switching to a non-torus topology while HashLife is active automatically deactivates it and exports the grid back to the standard engine.
+- **Status bar** — shows the topology name (e.g., `Klein Bottle`) when a non-default topology is selected. The torus label is hidden since it's the default.
+
 ## Design Notes
 
-- **Toroidal grid** — cells wrap around all edges, so patterns don't die at boundaries.
+- **Toroidal grid** — the default topology wraps cells around all edges, so patterns don't die at boundaries. Three alternative topologies are available — see [Grid Topology](#grid-topology).
 - **Cell aging with color gradients** — cells change color based on how many generations they've been alive, creating a visual heatmap that reveals stable structures vs. active frontiers at a glance:
   - **Green** (age 1–3) — newborn / active frontier
   - **Cyan** (age 4–8) — young
