@@ -1,6 +1,6 @@
 # Cellular Automaton — Terminal Simulator
 
-A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, and supports arbitrary rules via B/S notation.
+A single-file Python implementation of cellular automata that runs in the terminal using `curses`. No external dependencies. Ships with 8 preset B/S rulesets (Conway's Life, HighLife, Day & Night, Seeds, Diamoeba, Morley, 2x2, Maze), the 4-state **Wireworld** automaton, the continuous-valued **Gray-Scott** reaction-diffusion model, **Lenia** continuous smooth-kernel cellular automata, **Langton's Ant** and generalized turmites, the **Wa-Tor** predator-prey ecosystem, and supports arbitrary rules via B/S notation.
 
 ## Usage
 
@@ -27,6 +27,8 @@ python3 life.py --rule elementary --eca-rule 90     # Sierpinski triangles
 python3 life.py --rule turmite                      # Langton's Ant (classic RL)
 python3 life.py --rule turmite --turmite-preset llrr # symmetric 4-color turmite
 python3 life.py --rule turmite --turmite-preset highway4 # 4 ants interacting
+python3 life.py --rule wator                          # Wa-Tor predator-prey ecosystem
+python3 life.py --rule wator --wator-preset volatile  # fast boom-bust population cycles
 python3 life.py --script probabilistic_life        # run a user script on startup
 python3 life.py --script ~/my_script.py            # run a script from a file path
 python3 life.py --discover                         # evolve interesting rulesets via GA
@@ -44,11 +46,12 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `--speed`   | 0.1       | Delay between generations (seconds)  |
 | `--pattern` | `glider`  | One of: `glider`, `pulsar`, `gosper`, `random` |
 | `--load`    | —         | Load a `.cells` or `.rle` file (path or name from `~/.life-patterns/`) |
-| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, or B/S notation (e.g. `B36/S23`) |
+| `--rule`    | `life`    | Rule preset, `wireworld`, `grayscott`, `lenia`, `elementary`, `turmite`, `wator`, or B/S notation (e.g. `B36/S23`) |
 | `--gs-preset` | `mitosis` | Gray-Scott parameter preset (`mitosis`, `coral`, `solitons`, `maze`, `spots`, `worms`, `waves`, `bubbles`) |
 | `--lenia-preset` | `orbium` | Lenia species preset (`orbium`, `geminium`, `scutium`, `hydrogeminium`, `wanderer`, `smooth_life`) |
 | `--eca-rule` | 30        | Wolfram rule number (0–255) for Elementary CA mode |
 | `--turmite-preset` | `langton` | Turmite preset (`langton`, `highway4`, `llrr`, `lrrl`, `rllr`, `spiral`, `fibonacci`, `turmite_1`) |
+| `--wator-preset` | `classic` | Wa-Tor ecosystem preset (`classic`, `fast_breed`, `sparse`, `sharks_rule`, `volatile`, `equilibrium`) |
 | `--script`  | —         | Run a Python script on startup (path or name from `~/.life-scripts/`) |
 | `--discover` | off      | Launch genetic algorithm rule discovery mode |
 | `--ga-generations` | 50 | Number of GA generations in discovery mode |
@@ -77,7 +80,7 @@ python3 life.py --render 1 --cell-size 32 --grid-lines  # single high-res frame 
 | `B`       | Toggle Braille high-density rendering |
 | `T`       | Cycle topology (Torus → Klein Bottle → Möbius Strip → Bounded) |
 | `H`       | Toggle HashLife hyperspeed mode   |
-| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode |
+| `<` / `>` | Decrease / increase HashLife step exponent; cycle Gray-Scott presets in GS mode; cycle Lenia species presets in Lenia mode; cycle notable ECA rules in Elementary mode; cycle turmite presets in Turmite mode; cycle Wa-Tor ecosystem presets in Wa-Tor mode |
 | `W`       | Enter a specific Wolfram rule number (0–255) in Elementary CA mode |
 | `G`       | Export history as animated GIF    |
 | `L`       | Load and run a script             |
@@ -161,6 +164,7 @@ All rules use Birth/Survival notation — a cell is born if it has exactly B nei
 | `lenia`    | *(continuous)* | Smooth-kernel CA — see [Lenia](#lenia-continuous-cellular-automata) below |
 | `elementary`| *(1D Wolfram)* | 256 elementary CA rules — see [Elementary CA](#elementary-cellular-automata) below |
 | `turmite`  | *(agent-based)* | Langton's Ant & turmites — see [Langton's Ant](#langtons-ant--turmites) below |
+| `wator`    | *(ecosystem)* | Predator-prey dynamics — see [Wa-Tor](#wa-tor-predator-prey-ecosystem) below |
 
 Use `--rule <preset>` or `--rule B.../S...` for custom rules. Press `R` at runtime to cycle through presets.
 
@@ -391,6 +395,51 @@ Press `<` / `>` at runtime to cycle through presets:
 - **HashLife** — incompatible (agent-based simulation). Switching to turmite mode auto-deactivates HashLife.
 - **Topology** — ants respect the active topology (torus, Klein bottle, Möbius strip, bounded). On bounded topology, ants that would step out of bounds stay in place but still turn.
 - **Status bar** — shows ant count and `[<>]preset` hint.
+
+## Wa-Tor Predator-Prey Ecosystem
+
+Wa-Tor is A. K. Dewdney's classic predator-prey simulation. Fish and sharks coexist on a toroidal ocean. Fish breed after a set number of ticks; sharks hunt fish for energy and starve if they don't eat. The result is emergent boom-bust population waves — sweeping color fronts of predator and prey across the grid.
+
+This is the first simulation mode based on *population dynamics* rather than pattern formation or signal propagation.
+
+### Starting Wa-Tor
+
+```bash
+python3 life.py --rule wator                           # default Classic preset
+python3 life.py --rule wator --wator-preset volatile   # fast boom-bust cycles
+python3 life.py --rule wator --wator-preset sharks_rule # shark-dominated ocean
+```
+
+### Ecosystem Presets
+
+Press `<` / `>` at runtime to cycle through presets. Each preset tunes fish breeding time, shark breeding time, shark starvation energy, and initial population densities:
+
+| Preset        | Fish Breed | Shark Breed | Shark Starve | Character |
+|---------------|-----------|-------------|-------------|-----------|
+| `classic`     | 3         | 10          | 4           | Balanced predator-prey oscillation |
+| `fast_breed`  | 2         | 6           | 3           | Rapid reproduction, volatile dynamics |
+| `sparse`      | 5         | 15          | 6           | Low density, slow ecosystem |
+| `sharks_rule` | 4         | 8           | 8           | High shark energy, predator-dominated |
+| `volatile`    | 2         | 12          | 3           | Extreme boom-bust cycles |
+| `equilibrium` | 4         | 12          | 5           | Tends toward stable coexistence |
+
+### Rules
+
+1. **Fish** move to a random empty Von Neumann neighbor each tick. After `fish_breed` ticks, a fish leaves an offspring in its old cell when it moves.
+2. **Sharks** prefer fish neighbors (hunting) over empty ones. Eating a fish restores energy. After `shark_breed` ticks, a shark breeds like fish. Sharks lose 1 energy per tick and die when energy reaches 0.
+3. All creatures are processed in shuffled random order each tick to prevent directional bias.
+
+### Rendering
+
+- **Terminal** — fish are green, sharks are red, ocean is dark blue. Each creature is drawn as a double-width filled block.
+- **Braille** — supported; color is chosen by majority vote of the 2×4 block.
+- **Status bar** — shows `Fish:N Sharks:N breed=F/S starve=E [<>]preset`.
+
+### Interactions
+
+- **HashLife** — incompatible (population dynamics simulation). Switching to Wa-Tor mode auto-deactivates HashLife.
+- **Population stats** (`g`) — the sparkline graph shows the predator-prey oscillation, making boom-bust cycles clearly visible.
+- **Randomize** (`r`) — re-initializes the ocean with the current preset's density parameters.
 
 ## Population Statistics Dashboard
 

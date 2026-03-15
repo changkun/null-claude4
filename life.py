@@ -41,6 +41,7 @@ RULES = {
     "elementary": {"b": set(), "s": set(), "name": "Elementary CA (Rule 30)", "elementary": True},
     "lenia":      {"b": set(), "s": set(), "name": "Lenia (Orbium)", "lenia": True},
     "turmite":    {"b": set(), "s": set(), "name": "Langton's Ant", "turmite": True},
+    "wator":      {"b": set(), "s": set(), "name": "Wa-Tor (Classic)", "wator": True},
 }
 
 RULE_NAMES = list(RULES.keys())
@@ -136,6 +137,252 @@ def _is_lenia(rule):
 def _is_turmite(rule):
     """Check if the current rule is a Langton's Ant / turmite."""
     return rule.get("turmite", False)
+
+
+def _is_wator(rule):
+    """Check if the current rule is the Wa-Tor predator-prey simulation."""
+    return rule.get("wator", False)
+
+
+# --- Wa-Tor Predator-Prey Ecosystem ---
+# A. K. Dewdney's Wa-Tor simulation: fish and sharks on a toroidal ocean.
+# Fish breed after a set number of ticks.  Sharks hunt fish for energy and
+# starve if they don't eat.  Produces emergent boom-bust population waves.
+
+WATOR_PRESETS = {
+    "classic":    {"fish_breed": 3, "shark_breed": 10, "shark_starve": 4,
+                   "fish_pct": 0.30, "shark_pct": 0.05,
+                   "name": "Classic"},
+    "fast_breed": {"fish_breed": 2, "shark_breed": 6, "shark_starve": 3,
+                   "fish_pct": 0.35, "shark_pct": 0.08,
+                   "name": "Fast Breed"},
+    "sparse":     {"fish_breed": 5, "shark_breed": 15, "shark_starve": 6,
+                   "fish_pct": 0.15, "shark_pct": 0.03,
+                   "name": "Sparse Ocean"},
+    "sharks_rule":{"fish_breed": 4, "shark_breed": 8, "shark_starve": 8,
+                   "fish_pct": 0.25, "shark_pct": 0.12,
+                   "name": "Sharks Rule"},
+    "volatile":   {"fish_breed": 2, "shark_breed": 12, "shark_starve": 3,
+                   "fish_pct": 0.40, "shark_pct": 0.06,
+                   "name": "Volatile"},
+    "equilibrium":{"fish_breed": 4, "shark_breed": 12, "shark_starve": 5,
+                   "fish_pct": 0.20, "shark_pct": 0.04,
+                   "name": "Equilibrium"},
+}
+WATOR_PRESET_NAMES = list(WATOR_PRESETS.keys())
+
+# Cell types
+_WATOR_EMPTY = 0
+_WATOR_FISH = 1
+_WATOR_SHARK = 2
+
+# Module-level state
+_wator_grid = None       # 2D array: 0=empty, 1=fish, 2=shark
+_wator_fish_age = None   # 2D array: ticks since last breed (fish only)
+_wator_shark_age = None  # 2D array: ticks since last breed (shark only)
+_wator_shark_energy = None  # 2D array: energy counter (shark only)
+_wator_preset_idx = 0
+_wator_fish_breed = 3
+_wator_shark_breed = 10
+_wator_shark_starve = 4
+_wator_rows = 0
+_wator_cols = 0
+
+
+def _wator_init(rows, cols, preset_name=None):
+    """Initialize the Wa-Tor ocean with fish and sharks."""
+    import random as _rnd
+    global _wator_grid, _wator_fish_age, _wator_shark_age, _wator_shark_energy
+    global _wator_fish_breed, _wator_shark_breed, _wator_shark_starve
+    global _wator_rows, _wator_cols, _wator_preset_idx
+
+    if preset_name is None:
+        preset_name = WATOR_PRESET_NAMES[_wator_preset_idx]
+    preset = WATOR_PRESETS[preset_name]
+    _wator_fish_breed = preset["fish_breed"]
+    _wator_shark_breed = preset["shark_breed"]
+    _wator_shark_starve = preset["shark_starve"]
+    _wator_rows = rows
+    _wator_cols = cols
+
+    _wator_grid = [[_WATOR_EMPTY] * cols for _ in range(rows)]
+    _wator_fish_age = [[0] * cols for _ in range(rows)]
+    _wator_shark_age = [[0] * cols for _ in range(rows)]
+    _wator_shark_energy = [[0] * cols for _ in range(rows)]
+
+    fish_pct = preset["fish_pct"]
+    shark_pct = preset["shark_pct"]
+    for r in range(rows):
+        for c in range(cols):
+            roll = _rnd.random()
+            if roll < shark_pct:
+                _wator_grid[r][c] = _WATOR_SHARK
+                _wator_shark_age[r][c] = _rnd.randint(0, _wator_shark_breed - 1)
+                _wator_shark_energy[r][c] = _rnd.randint(1, _wator_shark_starve)
+            elif roll < shark_pct + fish_pct:
+                _wator_grid[r][c] = _WATOR_FISH
+                _wator_fish_age[r][c] = _rnd.randint(0, _wator_fish_breed - 1)
+
+
+def _wator_step():
+    """Advance Wa-Tor simulation by one generation."""
+    import random as _rnd
+    global _wator_grid, _wator_fish_age, _wator_shark_age, _wator_shark_energy
+
+    rows, cols = _wator_rows, _wator_cols
+    grid = _wator_grid
+    fish_age = _wator_fish_age
+    shark_age = _wator_shark_age
+    shark_energy = _wator_shark_energy
+
+    # Build shuffled list of all creatures to process in random order
+    fish_list = []
+    shark_list = []
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r][c] == _WATOR_FISH:
+                fish_list.append((r, c))
+            elif grid[r][c] == _WATOR_SHARK:
+                shark_list.append((r, c))
+
+    # Track which cells have already been moved-to this step
+    moved = [[False] * cols for _ in range(rows)]
+
+    # --- Fish move first ---
+    _rnd.shuffle(fish_list)
+    for r, c in fish_list:
+        if grid[r][c] != _WATOR_FISH or moved[r][c]:
+            continue  # eaten or already moved
+        # Find empty neighbors (Von Neumann)
+        neighbors = []
+        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            nr, nc = (r + dr) % rows, (c + dc) % cols
+            if grid[nr][nc] == _WATOR_EMPTY:
+                neighbors.append((nr, nc))
+        fish_age[r][c] += 1
+        if neighbors:
+            nr, nc = _rnd.choice(neighbors)
+            # Move fish
+            grid[nr][nc] = _WATOR_FISH
+            fish_age[nr][nc] = fish_age[r][c]
+            moved[nr][nc] = True
+            # Breed?
+            if fish_age[r][c] >= _wator_fish_breed:
+                # Leave offspring behind
+                grid[r][c] = _WATOR_FISH
+                fish_age[r][c] = 0
+                fish_age[nr][nc] = 0
+                moved[r][c] = True
+            else:
+                grid[r][c] = _WATOR_EMPTY
+                fish_age[r][c] = 0
+        else:
+            moved[r][c] = True  # stayed in place
+
+    # --- Sharks move second ---
+    _rnd.shuffle(shark_list)
+    for r, c in shark_list:
+        if grid[r][c] != _WATOR_SHARK or moved[r][c]:
+            continue  # already processed
+        shark_age[r][c] += 1
+        shark_energy[r][c] -= 1
+        # Starved?
+        if shark_energy[r][c] <= 0:
+            grid[r][c] = _WATOR_EMPTY
+            shark_age[r][c] = 0
+            shark_energy[r][c] = 0
+            continue
+        # Look for fish neighbors first (hunt)
+        fish_neighbors = []
+        empty_neighbors = []
+        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            nr, nc = (r + dr) % rows, (c + dc) % cols
+            if grid[nr][nc] == _WATOR_FISH:
+                fish_neighbors.append((nr, nc))
+            elif grid[nr][nc] == _WATOR_EMPTY:
+                empty_neighbors.append((nr, nc))
+        if fish_neighbors:
+            nr, nc = _rnd.choice(fish_neighbors)
+            # Eat the fish
+            fish_age[nr][nc] = 0
+            grid[nr][nc] = _WATOR_SHARK
+            shark_age[nr][nc] = shark_age[r][c]
+            shark_energy[nr][nc] = shark_energy[r][c] + _wator_shark_starve
+            moved[nr][nc] = True
+            # Breed?
+            if shark_age[r][c] >= _wator_shark_breed:
+                grid[r][c] = _WATOR_SHARK
+                shark_age[r][c] = 0
+                shark_energy[r][c] = _wator_shark_starve
+                shark_age[nr][nc] = 0
+                moved[r][c] = True
+            else:
+                grid[r][c] = _WATOR_EMPTY
+                shark_age[r][c] = 0
+                shark_energy[r][c] = 0
+        elif empty_neighbors:
+            nr, nc = _rnd.choice(empty_neighbors)
+            grid[nr][nc] = _WATOR_SHARK
+            shark_age[nr][nc] = shark_age[r][c]
+            shark_energy[nr][nc] = shark_energy[r][c]
+            moved[nr][nc] = True
+            if shark_age[r][c] >= _wator_shark_breed:
+                grid[r][c] = _WATOR_SHARK
+                shark_age[r][c] = 0
+                shark_energy[r][c] = _wator_shark_starve
+                shark_age[nr][nc] = 0
+                moved[r][c] = True
+            else:
+                grid[r][c] = _WATOR_EMPTY
+                shark_age[r][c] = 0
+                shark_energy[r][c] = 0
+        else:
+            moved[r][c] = True  # stayed in place
+
+
+def _wator_to_grid(rows, cols):
+    """Convert Wa-Tor state to display grid.
+
+    Encoding: 0=empty, 1-49=fish (age mapped), 50-99=shark (energy mapped).
+    """
+    grid = [[0] * cols for _ in range(rows)]
+    for r in range(min(rows, _wator_rows)):
+        for c in range(min(cols, _wator_cols)):
+            cell = _wator_grid[r][c]
+            if cell == _WATOR_FISH:
+                # Fish: values 1-49 (age-based brightness)
+                age = min(_wator_fish_age[r][c], 48) + 1
+                grid[r][c] = age
+            elif cell == _WATOR_SHARK:
+                # Shark: values 50-99 (energy-based brightness)
+                energy = min(_wator_shark_energy[r][c], 49) + 50
+                grid[r][c] = energy
+    return grid
+
+
+def _wator_color(val):
+    """Return curses color pair for a Wa-Tor cell value."""
+    if val == 0:
+        return 19       # dark blue — ocean
+    elif val < 50:
+        # Fish: green
+        return 1        # green
+    else:
+        # Shark: red
+        return 21       # red
+
+
+def _wator_population(grid):
+    """Count fish and shark populations from display grid."""
+    fish = 0
+    sharks = 0
+    for row in grid:
+        for cell in row:
+            if 1 <= cell < 50:
+                fish += 1
+            elif cell >= 50:
+                sharks += 1
+    return fish, sharks
 
 
 # --- Langton's Ant / Generalized Turmites ---
@@ -1646,6 +1893,10 @@ def place_pattern(grid, name, row_off=None, col_off=None):
 def step(grid, rule=None):
     if rule is None:
         rule = RULES["life"]
+    if _is_wator(rule):
+        rows, cols = len(grid), len(grid[0])
+        _wator_step()
+        return _wator_to_grid(rows, cols)
     if _is_turmite(rule):
         rows, cols = len(grid), len(grid[0])
         _turmite_step()
@@ -2239,7 +2490,7 @@ def _render_braille_grid(grid, rows, cols, term_rows, term_cols):
     return lines
 
 
-def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=False):
+def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=False, wator=False):
     """Pick the curses color pair for a Braille cell based on majority vote.
 
     Examines the 2×4 block of grid cells that map to terminal position (tr, tc)
@@ -2255,6 +2506,10 @@ def _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs=False, turmite=Fals
                 if gs:
                     cp = _grayscott_color(age)
                     counts[cp] = counts.get(cp, 0) + 1
+                elif wator:
+                    if age:
+                        cp = _wator_color(age)
+                        counts[cp] = counts.get(cp, 0) + 1
                 elif turmite:
                     if age:
                         cp = _turmite_color(age)
@@ -3613,6 +3868,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
         eca = _is_elementary(rule)
         lenia = _is_lenia(rule)
         turmite = _is_turmite(rule)
+        wator = _is_wator(rule)
 
         # Track population
         pop = _count_population(grid)
@@ -3681,7 +3937,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     ch = braille_lines[tr][tc]
                     if ch == chr(_BRAILLE_BASE):
                         continue  # empty — skip for speed
-                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia, turmite=turmite)
+                    cp = _braille_dominant_color(grid, rows, cols, tr, tc, ww, gs or lenia, turmite=turmite, wator=wator)
                     try:
                         stdscr.addstr(tr, tc, ch, curses.color_pair(cp))
                     except curses.error:
@@ -3712,6 +3968,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                         attr = curses.color_pair(8)
                     elif detected_cells and (r, c) in detected_cells:
                         attr = curses.color_pair(12)
+                    elif wator:
+                        attr = curses.color_pair(_wator_color(age))
+                        cell_str = "\u2588\u2588" if age else "  "
                     elif turmite:
                         attr = curses.color_pair(_turmite_color(age))
                         cell_str = "\u2588\u2588" if age else "  "
@@ -3795,7 +4054,12 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
             gs_str = f" | F={_gs_feed:.4f} k={_gs_kill:.4f} [<>]preset" if gs else ""
             eca_str = f" | Rule {_eca_rule_num} [<>]cycle [W]rule#" if eca else ""
             turmite_str = f" | {len(_turmite_ants)} ant(s) [<>]preset" if turmite else ""
-            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{topo_str}{hashlife_str}{gs_str}{eca_str}{turmite_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [T]opo [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
+            if wator:
+                _wf, _ws = _wator_population(grid)
+                wator_str = f" | Fish:{_wf} Sharks:{_ws} breed={_wator_fish_breed}/{_wator_shark_breed} starve={_wator_shark_starve} [<>]preset"
+            else:
+                wator_str = ""
+            status = f" Gen {generation} | Delay {delay:.2f}s | {rule_label} | {state_str}{hist_str}{pop_str}{detect_str}{sound_str}{braille_str}{topo_str}{hashlife_str}{gs_str}{eca_str}{turmite_str}{wator_str}{challenge_str}{script_str}{engine_str} | [space]pause [e]dit [g]raph [d]etect [S]ound [B]raille [T]opo [H]ashLife [+/-]speed [r]andom [R]ule [L]ua [n]ext [[][]]scrub [b]eginning [G]IF [q]uit"
         try:
             stdscr.addstr(min(rows, max_y - 1), 0, status[:max_x - 1], curses.color_pair(2) | curses.A_REVERSE)
         except curses.error:
@@ -4178,6 +4442,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_eca = eca
                 was_lenia = lenia
                 was_turmite = turmite
+                was_wator = wator
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -4189,10 +4454,11 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_eca = _is_elementary(rule)
                 new_lenia = _is_lenia(rule)
                 new_turmite = _is_turmite(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite:
+                new_wator = _is_wator(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator:
                     hashlife_active = False
                 # Mode transition: clear grid and re-initialize
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -4211,6 +4477,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_turmite:
                         _turmite_init(rows, cols)
                         grid = _turmite_to_grid(rows, cols)
+                    elif new_wator:
+                        _wator_init(rows, cols)
+                        grid = _wator_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -4299,7 +4568,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
             elif key == ord("-") or key == ord("_"):
                 delay = min(2.0, delay + 0.05)
             elif key == ord("r"):
-                if gs:
+                if wator:
+                    _wator_init(rows, cols)
+                    grid = _wator_to_grid(rows, cols)
+                elif gs:
                     _gs_init(rows, cols)
                     grid = _gs_to_grid(rows, cols)
                 elif eca:
@@ -4324,6 +4596,7 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 was_eca = eca
                 was_lenia = lenia
                 was_turmite = turmite
+                was_wator = wator
                 if rule_idx >= 0:
                     rule_idx = (rule_idx + 1) % len(RULE_NAMES)
                     rule = RULES[RULE_NAMES[rule_idx]]
@@ -4335,9 +4608,10 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 new_eca = _is_elementary(rule)
                 new_lenia = _is_lenia(rule)
                 new_turmite = _is_turmite(rule)
-                if new_ww or new_gs or new_eca or new_lenia or new_turmite:
+                new_wator = _is_wator(rule)
+                if new_ww or new_gs or new_eca or new_lenia or new_turmite or new_wator:
                     hashlife_active = False
-                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite:
+                if was_ww != new_ww or was_gs != new_gs or was_eca != new_eca or was_lenia != new_lenia or was_turmite != new_turmite or was_wator != new_wator:
                     for r2 in range(rows):
                         for c2 in range(cols):
                             grid[r2][c2] = 0
@@ -4356,6 +4630,9 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                     elif new_turmite:
                         _turmite_init(rows, cols)
                         grid = _turmite_to_grid(rows, cols)
+                    elif new_wator:
+                        _wator_init(rows, cols)
+                        grid = _wator_to_grid(rows, cols)
                     generation = 0
                     history = [copy.deepcopy(grid)]
                     hist_idx = 0
@@ -4583,6 +4860,30 @@ def run(stdscr, grid, speed, rule=None, network=None, script_engine=None):
                 rule["name"] = TURMITE_PRESETS[preset_name]["name"]
                 _turmite_init(rows, cols, preset_name)
                 grid = _turmite_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord("<") and wator:
+                # Previous Wa-Tor preset
+                _wator_preset_idx = (_wator_preset_idx - 1) % len(WATOR_PRESET_NAMES)
+                preset_name = WATOR_PRESET_NAMES[_wator_preset_idx]
+                rule["name"] = f"Wa-Tor ({WATOR_PRESETS[preset_name]['name']})"
+                _wator_init(rows, cols, preset_name)
+                grid = _wator_to_grid(rows, cols)
+                generation = 0
+                history = [copy.deepcopy(grid)]
+                hist_idx = 0
+                browsing_history = False
+                pop_history = []
+            elif key == ord(">") and wator:
+                # Next Wa-Tor preset
+                _wator_preset_idx = (_wator_preset_idx + 1) % len(WATOR_PRESET_NAMES)
+                preset_name = WATOR_PRESET_NAMES[_wator_preset_idx]
+                rule["name"] = f"Wa-Tor ({WATOR_PRESETS[preset_name]['name']})"
+                _wator_init(rows, cols, preset_name)
+                grid = _wator_to_grid(rows, cols)
                 generation = 0
                 history = [copy.deepcopy(grid)]
                 hist_idx = 0
@@ -5394,6 +5695,13 @@ def main():
              "Options: " + ", ".join(TURMITE_PRESETS.keys()),
     )
     parser.add_argument(
+        "--wator-preset",
+        choices=list(WATOR_PRESETS.keys()),
+        default="classic",
+        help="Wa-Tor ecosystem preset when --rule wator (default: classic). "
+             "Options: " + ", ".join(WATOR_PRESETS.keys()),
+    )
+    parser.add_argument(
         "--discover",
         action="store_true",
         default=False,
@@ -5462,7 +5770,7 @@ def main():
     )
     args = parser.parse_args()
 
-    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx
+    global _gs_preset_idx, _gs_feed, _gs_kill, _eca_rule_num, _eca_notable_idx, _lenia_preset_idx, _turmite_preset_idx, _wator_preset_idx
 
     # Headless batch-render mode: output PNG frames without terminal UI
     if args.render is not None:
@@ -5603,6 +5911,15 @@ def main():
             rule["name"] = preset["name"]
         _turmite_init(args.rows, args.cols, turmite_preset_name)
         grid = _turmite_to_grid(args.rows, args.cols)
+    elif args.rule.lower() == "wator":
+        # Wa-Tor predator-prey ecosystem
+        wator_preset_name = args.wator_preset
+        if wator_preset_name in WATOR_PRESETS:
+            _wator_preset_idx = WATOR_PRESET_NAMES.index(wator_preset_name)
+            preset = WATOR_PRESETS[wator_preset_name]
+            rule["name"] = f"Wa-Tor ({preset['name']})"
+        _wator_init(args.rows, args.cols, wator_preset_name)
+        grid = _wator_to_grid(args.rows, args.cols)
     else:
         place_pattern(grid, args.pattern)
 
